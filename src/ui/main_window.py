@@ -2,6 +2,7 @@
 主窗口 - 路由管理工具的主界面
 """
 import logging
+import os
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
@@ -166,13 +167,27 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
+        # 备份配置
+        backup_action = QAction("备份配置...", self)
+        backup_action.setShortcut("Ctrl+B")
+        backup_action.triggered.connect(self._on_backup_config)
+        file_menu.addAction(backup_action)
+        
+        # 还原配置
+        restore_action = QAction("还原配置...", self)
+        restore_action.setShortcut("Ctrl+R")
+        restore_action.triggered.connect(self._on_restore_config)
+        file_menu.addAction(restore_action)
+        
+        file_menu.addSeparator()
+        
         # 导入
-        import_action = QAction("导入...", self)
+        import_action = QAction("导入路由...", self)
         import_action.triggered.connect(self._on_import)
         file_menu.addAction(import_action)
         
         # 导出
-        export_action = QAction("导出...", self)
+        export_action = QAction("导出路由...", self)
         export_action.triggered.connect(self._on_export)
         file_menu.addAction(export_action)
         
@@ -2056,8 +2071,142 @@ class MainWindow(QMainWindow):
             # 刷新路由信息
             self._refresh_all()
     
+    def _on_backup_config(self):
+        """备份完整配置"""
+        # 先保存当前配置
+        self.config_manager.save_profile()
+        
+        # 选择保存位置
+        default_filename = f"{self.config_manager.current_profile}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "备份配置",
+            default_filename,
+            "JSON Files (*.json)"
+        )
+        
+        if not filepath:
+            return
+        
+        try:
+            import json
+            import shutil
+            
+            # 获取当前Profile的完整路径
+            source_path = self.config_manager.get_profile_path(self.config_manager.current_profile)
+            
+            # 复制配置文件到目标位置
+            shutil.copy2(source_path, filepath)
+            
+            logger.info(f"配置已备份到: {filepath}")
+            QMessageBox.information(
+                self, "成功", 
+                f"配置已成功备份到:\n{filepath}\n\n"
+                f"Profile: {self.config_manager.current_profile}\n"
+                f"路由数: {len(self.routes)}"
+            )
+        
+        except Exception as e:
+            logger.error(f"备份配置失败: {e}")
+            QMessageBox.critical(self, "错误", f"备份配置失败:\n{e}")
+    
+    def _on_restore_config(self):
+        """还原完整配置"""
+        # 选择要还原的配置文件
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "还原配置",
+            "", "JSON Files (*.json)"
+        )
+        
+        if not filepath:
+            return
+        
+        try:
+            import json
+            
+            # 读取配置文件
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            
+            # 验证配置格式
+            if not isinstance(config_data, dict) or 'profileName' not in config_data:
+                QMessageBox.warning(
+                    self, "错误", 
+                    "配置文件格式不正确\n\n"
+                    "请选择有效的Profile配置文件"
+                )
+                return
+            
+            original_profile_name = config_data.get('profileName', 'imported')
+            routes_count = len(config_data.get('routes', []))
+            groups_count = len(config_data.get('groups', []))
+            
+            # 询问Profile名称
+            profile_name, ok = QInputDialog.getText(
+                self, "还原配置",
+                f"配置信息:\n"
+                f"  原Profile: {original_profile_name}\n"
+                f"  路由数: {routes_count}\n"
+                f"  分组数: {groups_count}\n\n"
+                f"请输入新的Profile名称:",
+                text=f"{original_profile_name}_restored"
+            )
+            
+            if not ok or not profile_name:
+                return
+            
+            # 检查Profile是否已存在
+            target_path = self.config_manager.get_profile_path(profile_name)
+            if os.path.exists(target_path):
+                reply = QMessageBox.question(
+                    self, "确认",
+                    f"Profile '{profile_name}' 已存在。\n\n是否覆盖?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+            
+            # 更新配置中的Profile名称
+            config_data['profileName'] = profile_name
+            config_data['lastModified'] = datetime.now().isoformat()
+            
+            # 保存新的Profile
+            with open(target_path, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"配置已还原为Profile: {profile_name}")
+            
+            # 询问是否立即切换到还原的Profile
+            reply = QMessageBox.question(
+                self, "成功",
+                f"配置已成功还原为Profile: {profile_name}\n\n"
+                f"路由数: {routes_count}\n"
+                f"分组数: {groups_count}\n\n"
+                f"是否立即切换到此Profile?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            # 刷新Profile列表
+            self._refresh_profile_list()
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # 切换到新Profile
+                self.config_manager.load_profile(profile_name)
+                self.routes = self.config_manager.get_routes()
+                
+                # 更新UI
+                self.profile_combo.setCurrentText(profile_name)
+                self._update_group_tree()
+                self._update_unified_routes_table()
+        
+        except json.JSONDecodeError as e:
+            logger.error(f"配置文件JSON格式错误: {e}")
+            QMessageBox.critical(self, "错误", f"配置文件格式错误:\n{e}")
+        except Exception as e:
+            logger.error(f"还原配置失败: {e}")
+            QMessageBox.critical(self, "错误", f"还原配置失败:\n{e}")
+    
     def _on_import(self):
-        """导入"""
+        """导入路由"""
         filepath, _ = QFileDialog.getOpenFileName(
             self, "导入路由",
             "", "JSON Files (*.json);;CSV Files (*.csv)"

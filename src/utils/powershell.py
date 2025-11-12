@@ -4,9 +4,16 @@ PowerShell 命令执行封装
 import subprocess
 import json
 import logging
+import sys
 from typing import Tuple, Optional
 
 logger = logging.getLogger(__name__)
+
+# Windows 平台下隐藏子进程窗口的标志
+if sys.platform == 'win32':
+    CREATE_NO_WINDOW = 0x08000000
+else:
+    CREATE_NO_WINDOW = 0
 
 
 def run_powershell(command: str, timeout: int = 30) -> Tuple[bool, str, str]:
@@ -28,7 +35,8 @@ def run_powershell(command: str, timeout: int = 30) -> Tuple[bool, str, str]:
             text=True,
             timeout=timeout,
             encoding='utf-8',
-            errors='ignore'
+            errors='ignore',
+            creationflags=CREATE_NO_WINDOW  # 隐藏控制台窗口
         )
         
         success = result.returncode == 0
@@ -94,7 +102,8 @@ def run_route_cmd(args: str, timeout: int = 10) -> Tuple[bool, str, str]:
             text=True,
             timeout=timeout,
             encoding='gbk',  # Windows cmd 使用 GBK 编码
-            errors='ignore'
+            errors='ignore',
+            creationflags=CREATE_NO_WINDOW  # 隐藏控制台窗口
         )
         
         success = result.returncode == 0
