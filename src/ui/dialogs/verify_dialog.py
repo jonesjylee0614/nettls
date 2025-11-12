@@ -48,7 +48,7 @@ class VerifyThread(QThread):
 class VerifyDialog(QDialog):
     """验证结果对话框"""
     
-    def __init__(self, parent=None, verify_manager: VerifyManager = None, targets: list = None):
+    def __init__(self, parent=None, verify_manager: VerifyManager = None, targets: list = None, routes: dict = None):
         """
         初始化对话框
         
@@ -56,11 +56,13 @@ class VerifyDialog(QDialog):
             parent: 父窗口
             verify_manager: 验证管理器
             targets: 要验证的目标列表
+            routes: 目标到路由描述的映射 {target: desc}
         """
         super().__init__(parent)
         
         self.verify_manager = verify_manager
         self.targets = targets or []
+        self.routes = routes or {}
         self.verify_thread = None
         self.results = []
         
@@ -98,19 +100,20 @@ class VerifyDialog(QDialog):
         
         # 结果表格
         self.result_table = QTableWidget()
-        self.result_table.setColumnCount(6)
+        self.result_table.setColumnCount(7)
         self.result_table.setHorizontalHeaderLabels([
-            "目标", "状态", "出接口", "下一跳", "延迟(ms)", "错误信息"
+            "目标", "描述", "状态", "出接口", "下一跳", "延迟(ms)", "错误信息"
         ])
         
         # 设置列宽
         header = self.result_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # 描述
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # 状态
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)  # 出接口
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # 下一跳
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # 延迟
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)  # 错误信息
         
         # 设置表格属性
         self.result_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -187,27 +190,33 @@ class VerifyDialog(QDialog):
         # 目标
         self.result_table.setItem(row, 0, QTableWidgetItem(result.target))
         
+        # 描述
+        desc = self.routes.get(result.target, "-")
+        desc_item = QTableWidgetItem(desc)
+        desc_item.setForeground(QColor(255, 255, 255))  # 白色
+        self.result_table.setItem(row, 1, desc_item)
+        
         # 状态
         status_item = QTableWidgetItem("命中" if result.hit else "未命中")
         if result.hit:
             status_item.setForeground(QColor(34, 197, 94))  # 绿色
         else:
             status_item.setForeground(QColor(239, 68, 68))  # 红色
-        self.result_table.setItem(row, 1, status_item)
+        self.result_table.setItem(row, 2, status_item)
         
         # 出接口
-        self.result_table.setItem(row, 2, QTableWidgetItem(result.interface))
+        self.result_table.setItem(row, 3, QTableWidgetItem(result.interface))
         
         # 下一跳
         hop = result.first_hop if result.trace_success else result.gateway
-        self.result_table.setItem(row, 3, QTableWidgetItem(hop))
+        self.result_table.setItem(row, 4, QTableWidgetItem(hop))
         
         # 延迟
         latency_text = f"{result.latency_ms}" if result.latency_ms > 0 else "-"
-        self.result_table.setItem(row, 4, QTableWidgetItem(latency_text))
+        self.result_table.setItem(row, 5, QTableWidgetItem(latency_text))
         
         # 错误信息
-        self.result_table.setItem(row, 5, QTableWidgetItem(result.error))
+        self.result_table.setItem(row, 6, QTableWidgetItem(result.error))
     
     def _on_finished(self, results: list):
         """验证完成"""

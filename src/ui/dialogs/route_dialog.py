@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class RouteDialog(QDialog):
     """路由新增/编辑对话框"""
     
-    def __init__(self, parent=None, route: Route = None, interfaces: list = None, default_gateway: str = None):
+    def __init__(self, parent=None, route: Route = None, interfaces: list = None, default_gateway: str = None, groups: list = None):
         """
         初始化对话框
         
@@ -29,6 +29,7 @@ class RouteDialog(QDialog):
             route: 要编辑的路由(None 表示新增)
             interfaces: 可用接口列表
             default_gateway: 默认网关
+            groups: 可用分组列表
         """
         super().__init__(parent)
         
@@ -36,6 +37,7 @@ class RouteDialog(QDialog):
         self.interfaces = interfaces or []
         self.is_edit = route is not None
         self.default_gateway = default_gateway
+        self.groups = groups or []
         
         # 结果
         self.result_route: Route = None
@@ -95,10 +97,24 @@ class RouteDialog(QDialog):
         form_layout = QFormLayout()
         
         # 目标地址
+        target_layout = QHBoxLayout()
         self.target_input = QLineEdit()
         self.target_input.setPlaceholderText("支持 IP、CIDR 或域名，如 192.168.1.0/24")
-        # 暂不连接信号,等所有UI创建完成后再连接
-        form_layout.addRow("目标地址*:", self.target_input)
+        target_layout.addWidget(self.target_input)
+        
+        # 帮助按钮
+        help_btn = QPushButton("?")
+        help_btn.setToolTip("查看CIDR掩码对照表")
+        help_btn.setStyleSheet(
+            "QPushButton { background-color: #3B82F6; color: white; "
+            "border-radius: 10px; min-width: 20px; max-width: 20px; "
+            "min-height: 20px; max-height: 20px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #2563EB; }"
+        )
+        help_btn.clicked.connect(self._show_cidr_help)
+        target_layout.addWidget(help_btn)
+        
+        form_layout.addRow("目标地址*:", target_layout)
         
         # 前缀长度（仅对 IP 和域名显示）
         self.prefix_input = QSpinBox()
@@ -110,7 +126,10 @@ class RouteDialog(QDialog):
         # 掩码（只读显示）
         self.mask_display = QLineEdit()
         self.mask_display.setReadOnly(True)
-        self.mask_display.setStyleSheet("background-color: #f0f0f0;")
+        self.mask_display.setStyleSheet(
+            "background-color: #1E293B; color: #E2E8F0; "
+            "border: 1px solid #334155; padding: 5px; border-radius: 3px;"
+        )
         form_layout.addRow("子网掩码:", self.mask_display)
         
         # 网关
@@ -182,7 +201,12 @@ class RouteDialog(QDialog):
         # 分组
         self.group_input = QComboBox()
         self.group_input.setEditable(True)
-        self.group_input.addItems(["", "aliyun", "office", "devops", "lab", "debug"])
+        self.group_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)  # 不自动插入新项
+        # 动态加载分组列表
+        group_items = ["（无分组）"] + sorted(self.groups)
+        self.group_input.addItems(group_items)
+        self.group_input.setToolTip("可选择已有分组或输入新分组名称")
+        self.group_input.setCurrentIndex(0)  # 默认选择第一项
         form_layout.addRow("分组:", self.group_input)
         
         group.setLayout(form_layout)
@@ -199,11 +223,13 @@ class RouteDialog(QDialog):
         self.command_preview.setMaximumHeight(100)
         self.command_preview.setStyleSheet("""
             QTextEdit {
-                background-color: #f5f5f5;
+                background-color: #1E293B;
+                color: #E2E8F0;
                 font-family: 'Consolas', 'Monaco', monospace;
                 font-size: 10pt;
-                border: 1px solid #ccc;
-                padding: 5px;
+                border: 1px solid #334155;
+                padding: 8px;
+                border-radius: 4px;
             }
         """)
         self.command_preview.setPlaceholderText("命令预览将在这里显示...")
@@ -249,6 +275,140 @@ class RouteDialog(QDialog):
         
         return layout
     
+    def _show_cidr_help(self):
+        """显示CIDR掩码对照表"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("CIDR 掩码对照表")
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(500)
+        
+        layout = QVBoxLayout()
+        
+        # 说明
+        info_label = QLabel(
+            "<b>网段路由使用说明</b><br><br>"
+            "当您需要为多个相邻IP添加路由时，可以使用网段格式（CIDR）：<br>"
+            "例如：<code>103.235.46.0/24</code> 可以覆盖 103.235.46.0 ~ 103.235.46.255<br><br>"
+            "<b>使用方法：</b>在目标地址输入网段格式，程序会自动计算掩码。"
+        )
+        info_label.setWordWrap(True)
+        info_label.setTextFormat(Qt.TextFormat.RichText)
+        info_label.setStyleSheet(
+            "background-color: #EFF6FF; color: #1E40AF; "
+            "padding: 15px; border-radius: 4px; border: 1px solid #BFDBFE;"
+        )
+        layout.addWidget(info_label)
+        
+        # 对照表
+        table_html = """
+        <style>
+            table { border-collapse: collapse; width: 100%; font-family: 'Consolas', monospace; }
+            th { background-color: #3B82F6; color: white; padding: 10px; text-align: left; }
+            td { padding: 8px; border-bottom: 1px solid #E5E7EB; }
+            tr:hover { background-color: #F3F4F6; }
+            .prefix { font-weight: bold; color: #EF4444; }
+            .mask { color: #10B981; }
+        </style>
+        <table>
+            <tr>
+                <th>前缀</th>
+                <th>掩码</th>
+                <th>IP数量</th>
+                <th>范围示例</th>
+            </tr>
+            <tr>
+                <td class="prefix">/32</td>
+                <td class="mask">255.255.255.255</td>
+                <td>1</td>
+                <td>单个IP (主机路由)</td>
+            </tr>
+            <tr>
+                <td class="prefix">/31</td>
+                <td class="mask">255.255.255.254</td>
+                <td>2</td>
+                <td>点对点链路</td>
+            </tr>
+            <tr>
+                <td class="prefix">/30</td>
+                <td class="mask">255.255.255.252</td>
+                <td>4</td>
+                <td>x.x.x.0-3</td>
+            </tr>
+            <tr>
+                <td class="prefix">/29</td>
+                <td class="mask">255.255.255.248</td>
+                <td>8</td>
+                <td>x.x.x.0-7</td>
+            </tr>
+            <tr>
+                <td class="prefix">/28</td>
+                <td class="mask">255.255.255.240</td>
+                <td>16</td>
+                <td>x.x.x.0-15</td>
+            </tr>
+            <tr>
+                <td class="prefix">/27</td>
+                <td class="mask">255.255.255.224</td>
+                <td>32</td>
+                <td>x.x.x.0-31</td>
+            </tr>
+            <tr>
+                <td class="prefix">/26</td>
+                <td class="mask">255.255.255.192</td>
+                <td>64</td>
+                <td>x.x.x.0-63</td>
+            </tr>
+            <tr>
+                <td class="prefix">/25</td>
+                <td class="mask">255.255.255.128</td>
+                <td>128</td>
+                <td>x.x.x.0-127</td>
+            </tr>
+            <tr>
+                <td class="prefix">/24</td>
+                <td class="mask">255.255.255.0</td>
+                <td>256</td>
+                <td>x.x.x.0-255 (C类网)</td>
+            </tr>
+            <tr>
+                <td class="prefix">/16</td>
+                <td class="mask">255.255.0.0</td>
+                <td>65,536</td>
+                <td>x.x.0.0-x.x.255.255 (B类网)</td>
+            </tr>
+        </table>
+        """
+        
+        table_widget = QTextEdit()
+        table_widget.setHtml(table_html)
+        table_widget.setReadOnly(True)
+        layout.addWidget(table_widget)
+        
+        # 示例
+        example_label = QLabel(
+            "<b>常用示例：</b><br>"
+            "• <code>103.235.46.0/24</code> - 覆盖整个C类网段<br>"
+            "• <code>192.168.1.0/24</code> - 办公室内网<br>"
+            "• <code>10.8.0.0/24</code> - VPN网段<br>"
+            "• <code>39.104.0.0/16</code> - 云服务器网段"
+        )
+        example_label.setWordWrap(True)
+        example_label.setTextFormat(Qt.TextFormat.RichText)
+        example_label.setStyleSheet(
+            "background-color: #F0FDF4; color: #166534; "
+            "padding: 10px; border-radius: 4px; border: 1px solid #BBF7D0;"
+        )
+        layout.addWidget(example_label)
+        
+        # 关闭按钮
+        close_btn = QPushButton("关闭")
+        close_btn.setStyleSheet("padding: 8px 20px;")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
     def _connect_signals(self):
         """连接信号(在所有UI创建完成后调用)"""
         # 连接目标地址变化信号
@@ -293,7 +453,20 @@ class RouteDialog(QDialog):
         
         # 描述和分组
         self.desc_input.setPlainText(self.route.desc)
-        self.group_input.setCurrentText(self.route.group)
+        
+        # 设置分组
+        if self.route.group:
+            # 如果路由有分组，设置为该分组
+            index = self.group_input.findText(self.route.group)
+            if index >= 0:
+                self.group_input.setCurrentIndex(index)
+            else:
+                # 如果分组不在列表中，添加并选中
+                self.group_input.addItem(self.route.group)
+                self.group_input.setCurrentText(self.route.group)
+        else:
+            # 如果路由无分组，选择"（无分组）"
+            self.group_input.setCurrentIndex(0)
     
     def _on_target_changed(self, text: str):
         """目标地址变化事件"""
@@ -484,7 +657,7 @@ class RouteDialog(QDialog):
             metric=self.metric_input.value(),
             persistent=self.persistent_checkbox.isChecked(),
             pin=self.pin_checkbox.isChecked(),
-            group=self.group_input.currentText().strip(),
+            group="" if self.group_input.currentText() == "（无分组）" else self.group_input.currentText().strip(),
             desc=self.desc_input.toPlainText().strip()
         )
         
@@ -516,18 +689,30 @@ class RouteDialog(QDialog):
             return
         
         # 创建路由对象
-        self.result_route = self._create_route_from_form()
+        route = self._create_route_from_form()
+        if not route:
+            return
         
-        # 通知父窗口保存
-        self.accept()
-        
-        # 清空表单,准备下一次输入
-        self.target_input.clear()
-        self.desc_input.clear()
-        self.result_route = None
-        
-        # 重新显示对话框
-        self.show()
+        # 直接通知父窗口保存（通过父窗口的方法）
+        if hasattr(self.parent(), '_save_route_from_dialog'):
+            success = self.parent()._save_route_from_dialog(route, self.apply_immediately_checkbox.isChecked())
+            if success:
+                # 清空表单,准备下一次输入
+                self.target_input.clear()
+                self.desc_input.clear()
+                self.group_input.setCurrentIndex(0)  # 重置为"（无分组）"
+                
+                # 重置验证信息
+                self.validation_label.setVisible(False)
+                
+                # 可选：显示提示信息
+                QMessageBox.information(self, "成功", f"路由已保存: {route.target}\n\n继续添加下一条路由", 
+                                       QMessageBox.StandardButton.Ok)
+        else:
+            # 如果父窗口没有实现该方法，使用原来的逻辑
+            self.result_route = route
+            self.should_apply = self.apply_immediately_checkbox.isChecked()
+            self.accept()
     
     def get_route(self) -> Route:
         """获取结果路由对象"""
