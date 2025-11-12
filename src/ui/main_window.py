@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QComboBox, QLabel, QSplitter, QTreeWidget,
     QTreeWidgetItem, QLineEdit, QHeaderView, QMessageBox,
     QCheckBox, QDialog, QTabWidget, QFileDialog, QProgressDialog,
-    QGroupBox, QGridLayout, QInputDialog, QFormLayout
+    QGroupBox, QGridLayout, QInputDialog, QFormLayout, QTextEdit
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 
 from core.interface_manager import InterfaceManager
@@ -27,6 +27,37 @@ from ui.dialogs.snapshot_dialog import SnapshotDialog
 from ui.dialogs.profile_dialog import ProfileDialog
 
 logger = logging.getLogger(__name__)
+
+
+class LoadWorker(QThread):
+    """异步加载Worker"""
+    progress = pyqtSignal(int, str)  # 进度和消息
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    
+    def __init__(self, interface_manager, route_manager):
+        super().__init__()
+        self.interface_manager = interface_manager
+        self.route_manager = route_manager
+    
+    def run(self):
+        """执行加载任务"""
+        try:
+            # 第1步: 刷新接口
+            self.progress.emit(1, "正在读取网络接口...")
+            self.interface_manager.refresh_interfaces()
+            
+            # 第2步: 刷新系统路由
+            self.progress.emit(2, "正在读取系统路由...")
+            self.route_manager.refresh_system_routes()
+            
+            # 第3步: 完成
+            self.progress.emit(3, "正在更新界面...")
+            
+            self.finished.emit()
+        except Exception as e:
+            logger.error(f"异步加载失败: {e}")
+            self.error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -46,9 +77,24 @@ class MainWindow(QMainWindow):
         # 当前路由列表
         self.routes: list[Route] = []
         
+        # 缓存网关筛选数据
+        self._gateway_filter_cache = None
+        self._last_system_routes_count = 0
+        
         # 设置窗口
         self.setWindowTitle("路由管理工具 - NetTLS Route Manager")
         self.setGeometry(100, 100, 1400, 800)
+        
+        # 设置窗口图标
+        try:
+            # 尝试使用系统网络图标
+            style = self.style()
+            if style:
+                icon = style.standardIcon(style.StandardPixmap.SP_DriveNetIcon)
+                if not icon.isNull():
+                    self.setWindowIcon(icon)
+        except Exception as e:
+            logger.warning(f"设置窗口图标失败: {e}")
         
         # 初始化 UI
         self._init_ui()
@@ -181,25 +227,23 @@ class MainWindow(QMainWindow):
         help_btn = QPushButton("帮助")
         help_btn.clicked.connect(self._on_help)
         toolbar.addWidget(help_btn)
+        
+        toolbar.addSeparator()
+        
+        # 退出按钮
+        exit_btn = QPushButton("退出")
+        exit_btn.setStyleSheet("background-color: #EF4444; color: white; padding: 5px 10px;")
+        exit_btn.clicked.connect(self._on_exit)
+        toolbar.addWidget(exit_btn)
     
     def _create_central_widget(self):
         """创建中心窗口部件"""
         # 创建标签页
         self.tab_widget = QTabWidget()
         
-        # 标签页1: 配置路由
-        config_tab = self._create_config_routes_tab()
-        self.tab_widget.addTab(config_tab, "配置路由")
-        
-        # 标签页2: 系统路由
-        system_tab = self._create_system_routes_tab()
-        self.tab_widget.addTab(system_tab, "系统路由")
-        
-        # 监听标签页切换事件
-        self.tab_widget.currentChanged.connect(self._on_tab_changed)
-        
-        # 默认显示系统路由标签页
-        self.tab_widget.setCurrentIndex(1)
+        # 统一路由视图
+        unified_tab = self._create_unified_routes_tab()
+        self.tab_widget.addTab(unified_tab, "路由管理")
         
         self.setCentralWidget(self.tab_widget)
     
@@ -222,8 +266,89 @@ class MainWindow(QMainWindow):
         
         return splitter
     
-    def _create_system_routes_tab(self) -> QWidget:
-        """创建系统路由标签页"""
+    def _create_unified_routes_tab(self) -> QWidget:
+        """创建统一路由标签页"""
+        # 创建分割器(左侧统计和过滤,右侧路由表格)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # 左侧面板
+        left_panel = self._create_left_panel()
+        splitter.addWidget(left_panel)
+        
+        # 右侧面板
+        right_panel = self._create_routes_panel()
+        splitter.addWidget(right_panel)
+        
+        # 设置分割比例
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 4)
+        
+        return splitter
+    
+    def _create_left_panel(self) -> QWidget:
+        """创建左侧面板(统计和筛选)"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # 路由统计信息面板
+        stats_group = QGroupBox("路由统计")
+        stats_layout = QGridLayout()
+        
+        # 统计标签
+        self.stats_total_label = QLabel("配置路由: 0")
+        self.stats_enabled_label = QLabel("已启用: 0")
+        self.stats_system_label = QLabel("系统路由: 0")
+        self.stats_managed_label = QLabel("工具管理: 0")
+        
+        stats_layout.addWidget(QLabel("📋"), 0, 0)
+        stats_layout.addWidget(self.stats_total_label, 0, 1)
+        stats_layout.addWidget(QLabel("✓"), 1, 0)
+        stats_layout.addWidget(self.stats_enabled_label, 1, 1)
+        stats_layout.addWidget(QLabel("💾"), 2, 0)
+        stats_layout.addWidget(self.stats_system_label, 2, 1)
+        stats_layout.addWidget(QLabel("🔧"), 3, 0)
+        stats_layout.addWidget(self.stats_managed_label, 3, 1)
+        
+        stats_group.setLayout(stats_layout)
+        layout.addWidget(stats_group)
+        
+        # 分组筛选
+        group_group = QGroupBox("分组筛选")
+        group_layout = QVBoxLayout()
+        
+        self.group_tree = QTreeWidget()
+        self.group_tree.setHeaderHidden(True)
+        self.group_tree.itemClicked.connect(self._on_group_filter_changed)
+        group_layout.addWidget(self.group_tree)
+        
+        group_group.setLayout(group_layout)
+        layout.addWidget(group_group)
+        
+        # 网关筛选
+        gateway_group = QGroupBox("网关筛选")
+        gateway_layout = QVBoxLayout()
+        
+        self.gateway_filter_combo = QComboBox()
+        self.gateway_filter_combo.currentIndexChanged.connect(self._on_gateway_filter_changed)
+        gateway_layout.addWidget(self.gateway_filter_combo)
+        
+        gateway_group.setLayout(gateway_layout)
+        layout.addWidget(gateway_group)
+        
+        # WireGuard 警告标签
+        self.wg_warning = QLabel()
+        self.wg_warning.setStyleSheet("background-color: #FEF3C7; color: #92400E; padding: 8px; border-radius: 4px;")
+        self.wg_warning.setWordWrap(True)
+        self.wg_warning.setVisible(False)
+        layout.addWidget(self.wg_warning)
+        
+        layout.addStretch()
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def _create_routes_panel(self) -> QWidget:
+        """创建路由面板"""
         widget = QWidget()
         layout = QVBoxLayout()
         
@@ -233,50 +358,55 @@ class MainWindow(QMainWindow):
         # 新增路由按钮
         add_route_btn = QPushButton("新增路由")
         add_route_btn.setStyleSheet("background-color: #10B981; color: white; padding: 5px 15px;")
-        add_route_btn.clicked.connect(self._on_add_system_route)
+        add_route_btn.clicked.connect(self._on_add_route)
         toolbar.addWidget(add_route_btn)
         
         refresh_btn = QPushButton("刷新")
-        refresh_btn.clicked.connect(self._on_refresh_system_routes)
+        refresh_btn.clicked.connect(self._on_refresh_all_routes)
         toolbar.addWidget(refresh_btn)
         
-        # 网关筛选
-        toolbar.addWidget(QLabel("  网关筛选: "))
-        self.gateway_filter_combo = QComboBox()
-        self.gateway_filter_combo.setMinimumWidth(150)
-        self.gateway_filter_combo.currentIndexChanged.connect(self._on_gateway_filter_changed)
-        toolbar.addWidget(self.gateway_filter_combo)
+        toolbar.addWidget(QLabel("  搜索: "))
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("按目标、描述或分组过滤...")
+        self.search_input.textChanged.connect(self._on_search_changed)
+        self.search_input.setMaximumWidth(300)
+        toolbar.addWidget(self.search_input)
         
         toolbar.addStretch()
         
         # 统计标签
-        self.system_routes_count_label = QLabel("系统路由: 0 条")
-        toolbar.addWidget(self.system_routes_count_label)
+        self.unified_routes_count_label = QLabel("显示: 0 条")
+        toolbar.addWidget(self.unified_routes_count_label)
         
         layout.addLayout(toolbar)
         
         # 表格
-        self.system_routes_table = QTableWidget()
-        self.system_routes_table.setColumnCount(6)
-        self.system_routes_table.setHorizontalHeaderLabels([
-            "目标", "网关", "接口索引", "Metric", "协议", "操作"
+        self.unified_routes_table = QTableWidget()
+        self.unified_routes_table.setColumnCount(9)
+        self.unified_routes_table.setHorizontalHeaderLabels([
+            "目标", "网关", "接口索引", "Metric", "协议", "描述", "分组", "状态", "操作"
         ])
         
         # 设置列宽
-        header = self.system_routes_table.horizontalHeader()
+        header = self.unified_routes_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # 目标
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)  # 网关
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # 网关
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # 接口索引
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Metric
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # 协议
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # 操作
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # 描述
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # 分组
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # 状态
+        
+        # 操作列使用固定宽度以确保按钮有足够空间
+        self.unified_routes_table.setColumnWidth(8, 200)  # 操作
         
         # 设置表格属性
-        self.system_routes_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.system_routes_table.setAlternatingRowColors(True)
-        self.system_routes_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.unified_routes_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.unified_routes_table.setAlternatingRowColors(True)
+        self.unified_routes_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         
-        layout.addWidget(self.system_routes_table)
+        layout.addWidget(self.unified_routes_table)
         
         widget.setLayout(layout)
         return widget
@@ -432,50 +562,61 @@ class MainWindow(QMainWindow):
     
     def _delayed_refresh(self):
         """延迟刷新(启动后异步执行)"""
-        from PyQt6.QtWidgets import QApplication
+        # 先显示状态栏消息,不使用模态对话框阻塞界面
+        self.statusbar.showMessage("正在加载网络配置...", 0)
         
-        # 创建加载进度对话框
-        progress = QProgressDialog("正在加载网络配置...", None, 0, 3, self)
-        progress.setWindowTitle("NetTLS Route Manager")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setCancelButton(None)  # 不显示取消按钮
-        progress.setAutoClose(True)
-        progress.setValue(0)
-        progress.show()
-        QApplication.processEvents()  # 确保对话框显示
+        # 创建进度对话框(非模态)
+        self.load_progress = QProgressDialog("正在加载网络配置...", "取消", 0, 3, self)
+        self.load_progress.setWindowTitle("加载中")
+        self.load_progress.setWindowModality(Qt.WindowModality.NonModal)  # 改为非模态
+        self.load_progress.setMinimumDuration(500)  # 延迟显示,如果加载很快就不显示进度条
+        self.load_progress.setAutoClose(True)
+        self.load_progress.setValue(0)
         
-        # 第1步: 刷新接口
-        progress.setLabelText("正在读取网络接口...")
-        progress.setValue(1)
-        QApplication.processEvents()  # 更新界面
-        self.interface_manager.refresh_interfaces()
-        QApplication.processEvents()  # 处理事件
+        # 创建并启动Worker
+        self.load_worker = LoadWorker(self.interface_manager, self.route_manager)
+        self.load_worker.progress.connect(self._on_load_progress)
+        self.load_worker.finished.connect(self._on_load_finished)
+        self.load_worker.error.connect(self._on_load_error)
+        self.load_worker.start()
+    
+    def _on_load_progress(self, value: int, message: str):
+        """加载进度更新"""
+        if hasattr(self, 'load_progress') and self.load_progress:
+            self.load_progress.setValue(value)
+            self.load_progress.setLabelText(message)
+        self.statusbar.showMessage(message, 0)
+    
+    def _on_load_finished(self):
+        """加载完成"""
+        try:
+            # 更新UI
+            self._update_group_tree()
+            self._update_statusbar()
+            self._update_route_stats()
+            
+            # 关闭进度对话框
+            if hasattr(self, 'load_progress') and self.load_progress:
+                self.load_progress.close()
+                self.load_progress = None
+            
+            # 更新统一路由表格
+            QTimer.singleShot(50, self._update_unified_routes_table)
+            
+            self.statusbar.showMessage("加载完成", 3000)
+        except Exception as e:
+            logger.error(f"加载完成后更新UI失败: {e}")
+            self.statusbar.showMessage(f"加载完成,但更新界面时出错: {e}", 5000)
+    
+    def _on_load_error(self, error: str):
+        """加载错误"""
+        if hasattr(self, 'load_progress') and self.load_progress:
+            self.load_progress.close()
+            self.load_progress = None
         
-        # 第2步: 刷新系统路由
-        progress.setLabelText("正在读取系统路由...")
-        progress.setValue(2)
-        QApplication.processEvents()  # 更新界面
-        self.route_manager.refresh_system_routes()
-        QApplication.processEvents()  # 处理事件
-        
-        # 第3步: 更新界面
-        progress.setLabelText("正在更新界面...")
-        progress.setValue(3)
-        QApplication.processEvents()  # 更新界面
-        self._update_group_tree()
-        self._update_routes_table()
-        self._update_statusbar()
-        self._update_route_stats()
-        QApplication.processEvents()  # 处理事件
-        
-        # 完成
-        progress.close()
-        
-        # 在对话框关闭后再更新系统路由表格(确保能正确渲染)
-        QTimer.singleShot(50, self._update_system_routes_table)
-        
-        self.statusbar.showMessage("加载完成", 3000)
+        logger.error(f"加载网络配置失败: {error}")
+        QMessageBox.critical(self, "加载失败", f"加载网络配置时发生错误:\n{error}\n\n工具将以有限功能继续运行。")
+        self.statusbar.showMessage("加载失败 - 部分功能可能不可用", 5000)
     
     def _refresh_all(self):
         """刷新所有数据"""
@@ -487,12 +628,15 @@ class MainWindow(QMainWindow):
         
         # 更新 UI
         self._update_group_tree()
-        self._update_routes_table()
         self._update_statusbar()
-        self._update_system_routes_table()
+        self._update_unified_routes_table()
         self._update_route_stats()
         
         self.statusbar.showMessage("刷新完成", 3000)
+    
+    def _on_refresh_all_routes(self):
+        """刷新所有路由"""
+        self._refresh_all()
     
     def _update_group_tree(self):
         """更新分组树"""
@@ -654,80 +798,7 @@ class MainWindow(QMainWindow):
         # 更新 Profile 名称
         self.status_profile.setText(f"Profile: {self.config_manager.current_profile}")
     
-    def _update_system_routes_table(self, gateway_filter: str = None):
-        """
-        更新系统路由表格
-        
-        Args:
-            gateway_filter: 网关筛选条件 (None 或 "All (全部)" 表示全部)
-        """
-        system_routes = self.route_manager.get_system_routes()
-        
-        # 总是更新网关筛选下拉列表(确保数据最新)
-        self._update_gateway_filter_combo(system_routes)
-        
-        # 如果没有指定筛选条件,从下拉列表获取当前选择的数据
-        if gateway_filter is None:
-            # 从 itemData 获取实际的网关地址
-            current_index = self.gateway_filter_combo.currentIndex()
-            if current_index == 0:
-                gateway_filter = "All (全部)"
-            elif current_index > 0:
-                gateway_filter = self.gateway_filter_combo.itemData(current_index)
-            else:
-                gateway_filter = "All (全部)"
-        
-        # 过滤路由
-        if gateway_filter and gateway_filter != "All (全部)":
-            filtered_routes = [r for r in system_routes if r.get('NextHop', '') == gateway_filter]
-        else:
-            filtered_routes = system_routes
-        
-        # 更新表格
-        self.system_routes_table.setRowCount(0)
-        self.system_routes_count_label.setText(f"系统路由: {len(system_routes)} 条 (显示: {len(filtered_routes)})")
-        
-        for row, route_data in enumerate(filtered_routes):
-            self.system_routes_table.insertRow(row)
-            
-            # 目标
-            dest = route_data.get('DestinationPrefix', '')
-            self.system_routes_table.setItem(row, 0, QTableWidgetItem(dest))
-            
-            # 网关
-            gateway = route_data.get('NextHop', '')
-            self.system_routes_table.setItem(row, 1, QTableWidgetItem(gateway))
-            
-            # 接口索引
-            if_index = str(route_data.get('ifIndex', ''))
-            self.system_routes_table.setItem(row, 2, QTableWidgetItem(if_index))
-            
-            # Metric
-            metric = str(route_data.get('RouteMetric', ''))
-            self.system_routes_table.setItem(row, 3, QTableWidgetItem(metric))
-            
-            # 协议
-            protocol = route_data.get('Protocol', '')
-            self.system_routes_table.setItem(row, 4, QTableWidgetItem(protocol))
-            
-            # 操作按钮
-            actions_widget = QWidget()
-            actions_layout = QHBoxLayout(actions_widget)
-            actions_layout.setContentsMargins(2, 2, 2, 2)
-            
-            # 只有 NetMgmt 协议的路由才能删除 (静态路由)
-            if protocol == 'NetMgmt':
-                delete_btn = QPushButton("删除")
-                delete_btn.setStyleSheet("background-color: #FEE2E2; color: #991B1B;")
-                delete_btn.clicked.connect(lambda checked, d=dest: self._on_delete_system_route(d))
-                actions_layout.addWidget(delete_btn)
-            else:
-                # 系统路由不可删除
-                readonly_label = QLabel("系统路由")
-                readonly_label.setStyleSheet("color: gray;")
-                actions_layout.addWidget(readonly_label)
-            
-            self.system_routes_table.setCellWidget(row, 5, actions_widget)
+    # 已废弃: _update_system_routes_table 方法被 _update_unified_routes_table 替代
     
     def _check_route_in_system(self, route: Route) -> dict:
         """
@@ -764,29 +835,58 @@ class MainWindow(QMainWindow):
         total_routes = len(self.routes)
         enabled_routes = len([r for r in self.routes if r.enabled])
         
-        # 统计已应用的路由
-        applied_routes = 0
-        for route in self.routes:
-            if self._check_route_in_system(route)['exists']:
-                applied_routes += 1
-        
         # 统计系统路由
         system_routes = self.route_manager.get_system_routes()
         system_route_count = len(system_routes)
         
+        # 统计工具管理的路由(在系统中存在且有配置信息的)
+        managed_routes = 0
+        for sys_route in system_routes:
+            dest = sys_route.get('DestinationPrefix', '')
+            if self._find_config_route_by_destination(dest):
+                managed_routes += 1
+        
         # 更新标签
-        self.stats_total_label.setText(f"总路由: {total_routes}")
+        self.stats_total_label.setText(f"配置路由: {total_routes}")
         self.stats_enabled_label.setText(f"已启用: {enabled_routes}")
-        self.stats_applied_label.setText(f"已应用: {applied_routes}")
         self.stats_system_label.setText(f"系统路由: {system_route_count}")
+        self.stats_managed_label.setText(f"工具管理: {managed_routes}")
+    
+    def _find_config_route_by_destination(self, destination_prefix: str) -> Route:
+        """
+        根据目标前缀查找配置路由
+        
+        Args:
+            destination_prefix: 目标前缀,如 "192.168.1.0/24"
+            
+        Returns:
+            Route: 找到的配置路由,未找到返回 None
+        """
+        if not destination_prefix:
+            return None
+        
+        target_ip = destination_prefix.split('/')[0] if '/' in destination_prefix else destination_prefix
+        
+        for route in self.routes:
+            route_ip = route.target.split('/')[0] if '/' in route.target else route.target
+            if route_ip == target_ip:
+                return route
+        
+        return None
     
     def _update_gateway_filter_combo(self, system_routes: list):
         """
-        更新网关筛选下拉列表
+        更新网关筛选下拉列表(使用缓存优化性能)
         
         Args:
             system_routes: 系统路由列表
         """
+        # 检查是否需要更新缓存
+        current_count = len(system_routes)
+        if self._gateway_filter_cache is not None and current_count == self._last_system_routes_count:
+            # 数据未变化,不需要重建下拉列表
+            return
+        
         # 保存当前选择
         current_selection = self.gateway_filter_combo.currentText()
         
@@ -824,8 +924,193 @@ class MainWindow(QMainWindow):
             # 首次加载,选择192开头的网关
             self._select_default_gateway(sorted_gateways)
         
+        # 更新缓存
+        self._gateway_filter_cache = gateway_counts.copy()
+        self._last_system_routes_count = current_count
+        
         # 取消阻塞信号
         self.gateway_filter_combo.blockSignals(False)
+    
+    def _update_unified_routes_table(self, group_filter: str = "All", gateway_filter: str = None, search_text: str = ""):
+        """
+        更新统一路由表格
+        
+        Args:
+            group_filter: 分组筛选("All" 表示全部)
+            gateway_filter: 网关筛选(None 或 "All (全部)" 表示全部)
+            search_text: 搜索文本
+        """
+        system_routes = self.route_manager.get_system_routes()
+        
+        # 更新网关筛选下拉列表(会检查缓存,避免不必要的重建)
+        self._update_gateway_filter_combo(system_routes)
+        
+        # 如果没有指定筛选条件,从下拉列表获取当前选择
+        if gateway_filter is None:
+            current_index = self.gateway_filter_combo.currentIndex()
+            if current_index == 0:
+                gateway_filter = "All (全部)"
+            elif current_index > 0:
+                gateway_filter = self.gateway_filter_combo.itemData(current_index)
+            else:
+                gateway_filter = "All (全部)"
+        
+        # 过滤路由
+        filtered_routes = []
+        for sys_route in system_routes:
+            # 网关筛选
+            if gateway_filter and gateway_filter != "All (全部)":
+                if sys_route.get('NextHop', '') != gateway_filter:
+                    continue
+            
+            # 查找对应的配置路由
+            config_route = self._find_config_route_by_destination(sys_route.get('DestinationPrefix', ''))
+            
+            # 分组筛选
+            if group_filter != "All":
+                if group_filter == "":
+                    # 筛选未分组的
+                    if config_route and config_route.group:
+                        continue
+                else:
+                    # 筛选特定分组
+                    if not config_route or config_route.group != group_filter:
+                        continue
+            
+            # 搜索筛选
+            if search_text:
+                search_lower = search_text.lower()
+                dest = sys_route.get('DestinationPrefix', '').lower()
+                desc = config_route.desc.lower() if config_route else ""
+                group = config_route.group.lower() if config_route else ""
+                
+                if (search_lower not in dest and
+                    search_lower not in desc and
+                    search_lower not in group):
+                    continue
+            
+            filtered_routes.append((sys_route, config_route))
+        
+        # 更新表格
+        self.unified_routes_table.setRowCount(0)
+        self.unified_routes_count_label.setText(f"显示: {len(filtered_routes)} 条 (总计: {len(system_routes)})")
+        
+        for row, (sys_route, config_route) in enumerate(filtered_routes):
+            self.unified_routes_table.insertRow(row)
+            
+            # 目标
+            dest = sys_route.get('DestinationPrefix', '')
+            self.unified_routes_table.setItem(row, 0, QTableWidgetItem(dest))
+            
+            # 网关
+            gateway = sys_route.get('NextHop', '')
+            self.unified_routes_table.setItem(row, 1, QTableWidgetItem(gateway))
+            
+            # 接口索引
+            if_index = str(sys_route.get('ifIndex', ''))
+            self.unified_routes_table.setItem(row, 2, QTableWidgetItem(if_index))
+            
+            # Metric
+            metric = str(sys_route.get('RouteMetric', ''))
+            self.unified_routes_table.setItem(row, 3, QTableWidgetItem(metric))
+            
+            # 协议
+            protocol = sys_route.get('Protocol', '')
+            self.unified_routes_table.setItem(row, 4, QTableWidgetItem(protocol))
+            
+            # 描述(来自配置)
+            desc = config_route.desc if config_route else "-"
+            desc_item = QTableWidgetItem(desc)
+            if config_route:
+                desc_item.setForeground(Qt.GlobalColor.darkBlue)
+            self.unified_routes_table.setItem(row, 5, desc_item)
+            
+            # 分组(来自配置)
+            group = config_route.group if config_route else "-"
+            group_item = QTableWidgetItem(group)
+            if config_route:
+                group_item.setForeground(Qt.GlobalColor.darkGreen)
+            self.unified_routes_table.setItem(row, 6, group_item)
+            
+            # 状态
+            if config_route:
+                status = "🔧 工具管理"
+                status_item = QTableWidgetItem(status)
+                status_item.setForeground(Qt.GlobalColor.darkGreen)
+            else:
+                if protocol == 'NetMgmt':
+                    status = "📝 手动添加"
+                    status_item = QTableWidgetItem(status)
+                    status_item.setForeground(Qt.GlobalColor.darkOrange)
+                else:
+                    status = "🖥️ 系统路由"
+                    status_item = QTableWidgetItem(status)
+                    status_item.setForeground(Qt.GlobalColor.gray)
+            self.unified_routes_table.setItem(row, 7, status_item)
+            
+            # 操作按钮
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(2, 2, 2, 2)
+            actions_layout.setSpacing(4)
+            
+            # 根据不同情况显示不同按钮
+            # 判断是否可删除路由(排除系统核心路由)
+            is_deletable = protocol not in ['Local', 'Redirect'] and gateway != '0.0.0.0'
+            
+            if config_route:
+                # 工具管理的路由: 显示编辑路由和系统路由按钮
+                edit_config_btn = QPushButton("✏️")
+                edit_config_btn.setToolTip("编辑路由配置")
+                edit_config_btn.setStyleSheet(
+                    "QPushButton { background-color: #3B82F6; color: white; border: none; "
+                    "border-radius: 4px; padding: 5px; font-size: 14px; min-width: 32px; }"
+                    "QPushButton:hover { background-color: #2563EB; }"
+                )
+                edit_config_btn.clicked.connect(lambda checked, r=config_route: self._on_edit_route_config(r))
+                actions_layout.addWidget(edit_config_btn)
+                
+                system_route_btn = QPushButton("⚙️")
+                system_route_btn.setToolTip("管理系统路由")
+                system_route_btn.setStyleSheet(
+                    "QPushButton { background-color: #F59E0B; color: white; border: none; "
+                    "border-radius: 4px; padding: 5px; font-size: 14px; min-width: 32px; }"
+                    "QPushButton:hover { background-color: #D97706; }"
+                )
+                system_route_btn.clicked.connect(lambda checked, r=config_route, d=dest: self._on_manage_system_route(r, d))
+                actions_layout.addWidget(system_route_btn)
+                
+            elif is_deletable:
+                # 可操作的系统路由: 显示编辑和删除按钮
+                edit_btn = QPushButton("✏️")
+                edit_btn.setToolTip("编辑并添加到配置")
+                edit_btn.setStyleSheet(
+                    "QPushButton { background-color: #3B82F6; color: white; border: none; "
+                    "border-radius: 4px; padding: 5px; font-size: 14px; min-width: 32px; }"
+                    "QPushButton:hover { background-color: #2563EB; }"
+                )
+                edit_btn.clicked.connect(lambda checked, d=dest, sr=sys_route: self._on_edit_netmgmt_route(d, sr))
+                actions_layout.addWidget(edit_btn)
+                
+                delete_btn = QPushButton("🗑️")
+                delete_btn.setToolTip("删除路由")
+                delete_btn.setStyleSheet(
+                    "QPushButton { background-color: #EF4444; color: white; border: none; "
+                    "border-radius: 4px; padding: 5px; font-size: 14px; min-width: 32px; }"
+                    "QPushButton:hover { background-color: #DC2626; }"
+                )
+                delete_btn.clicked.connect(lambda checked, d=dest: self._on_delete_system_route(d))
+                actions_layout.addWidget(delete_btn)
+                
+            else:
+                # 系统核心路由: 不可操作
+                readonly_label = QLabel("🔒")
+                readonly_label.setStyleSheet("color: #9CA3AF; font-size: 16px;")
+                readonly_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                readonly_label.setToolTip("系统核心路由，不可操作")
+                actions_layout.addWidget(readonly_label)
+            
+            self.unified_routes_table.setCellWidget(row, 8, actions_widget)
     
     def _select_default_gateway(self, gateways: list):
         """选择默认网关(192开头的第一个)"""
@@ -838,18 +1123,21 @@ class MainWindow(QMainWindow):
     
     # === 事件处理 ===
     
-    def _on_tab_changed(self, index: int):
-        """标签页切换事件"""
-        if index == 1:  # 切换到系统路由标签页
-            # 只在表格为空时才刷新(避免重复刷新)
-            if self.system_routes_table.rowCount() == 0:
-                self._update_system_routes_table()
+    def _on_group_filter_changed(self, item: QTreeWidgetItem, column: int):
+        """分组筛选变化事件"""
+        group_name = item.data(0, Qt.ItemDataRole.UserRole)
+        search_text = self.search_input.text()
+        self._update_unified_routes_table(group_name, None, search_text)
     
     def _on_refresh_system_routes(self):
         """刷新系统路由"""
         self.statusbar.showMessage("正在刷新系统路由...", 0)
         if self.route_manager.refresh_system_routes():
-            self._update_system_routes_table()
+            # 清空缓存,强制重新加载
+            self._gateway_filter_cache = None
+            self._last_system_routes_count = 0
+            
+            self._update_unified_routes_table()
             self._update_route_stats()  # 同时更新统计信息
             self.statusbar.showMessage("系统路由刷新完成", 3000)
         else:
@@ -858,8 +1146,356 @@ class MainWindow(QMainWindow):
     
     def _on_gateway_filter_changed(self, index: int):
         """网关筛选变化事件"""
-        # 更新表格(会自动从下拉列表读取当前选择)
-        self._update_system_routes_table()
+        # 获取当前选中的分组
+        selected_items = self.group_tree.selectedItems()
+        if selected_items:
+            group_name = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+        else:
+            group_name = "All"
+        
+        search_text = self.search_input.text()
+        self._update_unified_routes_table(group_name, None, search_text)
+    
+    def _on_search_changed(self, text: str):
+        """搜索文本变化事件"""
+        # 获取当前选中的分组
+        selected_items = self.group_tree.selectedItems()
+        if selected_items:
+            group_name = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+        else:
+            group_name = "All"
+        
+        self._update_unified_routes_table(group_name, None, text)
+    
+    def _on_edit_netmgmt_route(self, destination: str, sys_route: dict):
+        """编辑NetMgmt类型的系统路由(转为配置路由)"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑路由 - 添加到配置")
+        dialog.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        
+        # 说明
+        info_label = QLabel(
+            "此路由是手动添加的系统路由，尚未加入本工具管理。\n"
+            "编辑后将添加到配置文件中，由本工具管理。"
+        )
+        info_label.setStyleSheet("background-color: #FEF3C7; color: #92400E; padding: 10px; border-radius: 4px;")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        form_layout = QFormLayout()
+        
+        # 显示路由信息(只读)
+        route_info = QLabel(
+            f"目标: {destination}\n"
+            f"网关: {sys_route.get('NextHop', '')}\n"
+            f"接口索引: {sys_route.get('ifIndex', '')}\n"
+            f"Metric: {sys_route.get('RouteMetric', '')}"
+        )
+        route_info.setStyleSheet("background-color: #F3F4F6; color: #1F2937; padding: 10px; border-radius: 4px;")
+        form_layout.addRow("路由信息:", route_info)
+        
+        # 描述输入
+        desc_input = QTextEdit()
+        desc_input.setPlaceholderText("请输入路由描述...")
+        desc_input.setMaximumHeight(80)
+        form_layout.addRow("描述*:", desc_input)
+        
+        # 分组输入
+        group_input = QComboBox()
+        group_input.setEditable(True)
+        group_input.addItems(["", "aliyun", "office", "devops", "lab", "debug"])
+        form_layout.addRow("分组:", group_input)
+        
+        layout.addLayout(form_layout)
+        
+        # 按钮
+        button_layout = QHBoxLayout()
+        ok_btn = QPushButton("添加到配置")
+        ok_btn.setStyleSheet("background-color: #10B981; color: white; padding: 5px 15px;")
+        cancel_btn = QPushButton("取消")
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+        
+        dialog.setLayout(layout)
+        
+        # 连接信号
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        # 显示对话框
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            desc = desc_input.toPlainText().strip()
+            if not desc:
+                QMessageBox.warning(dialog, "错误", "描述不能为空")
+                return
+            
+            # 解析目标和前缀
+            if '/' in destination:
+                target, prefix_str = destination.split('/')
+                prefix_length = int(prefix_str)
+            else:
+                target = destination
+                prefix_length = 32
+            
+            # 获取接口名称
+            if_index = sys_route.get('ifIndex', 0)
+            interface = None
+            for iface in self.interface_manager.get_all_interfaces():
+                if iface.if_index == if_index:
+                    interface = iface
+                    break
+            
+            # 创建配置路由
+            new_route = Route(
+                enabled=True,
+                target=target,
+                prefix_length=prefix_length,
+                gateway=sys_route.get('NextHop', ''),
+                interface_name=interface.name if interface else "",
+                metric=sys_route.get('RouteMetric', 256),
+                persistent=True,
+                group=group_input.currentText().strip(),
+                desc=desc
+            )
+            
+            # 添加到配置
+            self.routes.append(new_route)
+            self.config_manager.set_routes(self.routes)
+            self.config_manager.save_profile()
+            
+            logger.info(f"已将系统路由添加到配置: {destination}")
+            QMessageBox.information(dialog, "成功", f"路由已添加到配置:\n{destination}")
+            
+            # 刷新显示
+            self._update_group_tree()
+            self._update_unified_routes_table()
+            self._update_route_stats()
+            
+            self.statusbar.showMessage("路由已添加到配置", 3000)
+    
+    def _on_edit_route_config(self, config_route: Route):
+        """编辑路由配置(仅修改描述和分组,不修改系统路由)"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑路由配置")
+        dialog.setMinimumWidth(500)
+        
+        layout = QFormLayout()
+        
+        # 显示路由基本信息(只读)
+        info_label = QLabel(
+            f"目标: {config_route.get_destination_prefix()}\n"
+            f"网关: {config_route.gateway}\n"
+            f"接口: {config_route.interface_name}"
+        )
+        info_label.setStyleSheet("background-color: #F3F4F6; color: #1F2937; padding: 10px; border-radius: 4px;")
+        layout.addRow("路由信息:", info_label)
+        
+        # 描述输入
+        desc_input = QTextEdit()
+        desc_input.setPlainText(config_route.desc)
+        desc_input.setMaximumHeight(80)
+        layout.addRow("描述*:", desc_input)
+        
+        # 分组输入
+        group_input = QComboBox()
+        group_input.setEditable(True)
+        group_input.addItems(["", "aliyun", "office", "devops", "lab", "debug"])
+        group_input.setCurrentText(config_route.group)
+        layout.addRow("分组:", group_input)
+        
+        # 按钮
+        button_layout = QHBoxLayout()
+        ok_btn = QPushButton("保存")
+        ok_btn.setStyleSheet("background-color: #10B981; color: white; padding: 5px 15px;")
+        cancel_btn = QPushButton("取消")
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addRow("", button_layout)
+        
+        dialog.setLayout(layout)
+        
+        # 连接信号
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        # 显示对话框
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 更新配置
+            new_desc = desc_input.toPlainText().strip()
+            new_group = group_input.currentText().strip()
+            
+            if not new_desc:
+                QMessageBox.warning(self, "错误", "描述不能为空")
+                return
+            
+            # 更新路由配置
+            config_route.desc = new_desc
+            config_route.group = new_group
+            
+            # 保存配置
+            self.config_manager.set_routes(self.routes)
+            self.config_manager.save_profile()
+            
+            logger.info(f"成功更新路由配置: {config_route.target}")
+            QMessageBox.information(self, "成功", "路由配置已更新")
+            
+            # 刷新显示
+            self._update_group_tree()
+            self._update_unified_routes_table()
+            self._update_route_stats()
+            
+            self.statusbar.showMessage("路由配置更新成功", 3000)
+    
+    def _on_manage_system_route(self, config_route: Route, destination: str):
+        """管理系统路由(删除或重新应用)"""
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("管理系统路由")
+        dialog.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        
+        # 显示路由信息
+        info_label = QLabel(
+            f"目标: {destination}\n"
+            f"网关: {config_route.gateway}\n"
+            f"接口: {config_route.interface_name}\n"
+            f"Metric: {config_route.metric}\n"
+            f"描述: {config_route.desc}\n"
+            f"分组: {config_route.group}"
+        )
+        info_label.setStyleSheet("background-color: #F3F4F6; color: #1F2937; padding: 10px; border-radius: 4px;")
+        layout.addWidget(info_label)
+        
+        # 说明
+        note_label = QLabel(
+            "系统路由操作:\n"
+            "• 删除: 删除本地配置和系统路由\n"
+            "• 重新应用: 删除旧路由并重新添加"
+        )
+        note_label.setStyleSheet("padding: 10px;")
+        layout.addWidget(note_label)
+        
+        # 按钮
+        button_layout = QHBoxLayout()
+        
+        delete_btn = QPushButton("删除路由")
+        delete_btn.setStyleSheet("background-color: #EF4444; color: white; padding: 8px 15px;")
+        button_layout.addWidget(delete_btn)
+        
+        reapply_btn = QPushButton("重新应用")
+        reapply_btn.setStyleSheet("background-color: #F59E0B; color: white; padding: 8px 15px;")
+        button_layout.addWidget(reapply_btn)
+        
+        cancel_btn = QPushButton("取消")
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        # 连接信号
+        delete_btn.clicked.connect(lambda: self._confirm_delete_route(dialog, config_route, destination))
+        reapply_btn.clicked.connect(lambda: self._confirm_reapply_route(dialog, config_route, destination))
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        dialog.exec()
+    
+    def _confirm_delete_route(self, parent_dialog: QDialog, config_route: Route, destination: str):
+        """确认删除路由(配置+系统)"""
+        reply = QMessageBox.question(
+            parent_dialog, "确认删除",
+            f"确定要删除路由?\n\n"
+            f"目标: {destination}\n"
+            f"描述: {config_route.desc}\n"
+            f"分组: {config_route.group}\n\n"
+            f"将同时删除配置和系统路由!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        # 删除系统路由
+        self.statusbar.showMessage(f"正在删除系统路由 {destination}...", 0)
+        success, error = self.route_manager.delete_route(destination)
+        
+        if not success:
+            QMessageBox.warning(parent_dialog, "警告", f"删除系统路由失败:\n{error}\n\n将继续删除配置路由。")
+        
+        # 删除配置路由
+        try:
+            self.routes.remove(config_route)
+            self.config_manager.set_routes(self.routes)
+            self.config_manager.save_profile()
+            
+            logger.info(f"成功删除路由: {destination}")
+            QMessageBox.information(parent_dialog, "成功", f"已删除路由: {destination}")
+            
+            # 刷新显示
+            self.route_manager.refresh_system_routes()
+            self._update_group_tree()
+            self._update_unified_routes_table()
+            self._update_route_stats()
+            
+            self.statusbar.showMessage("路由删除成功", 3000)
+            parent_dialog.accept()
+        except Exception as e:
+            logger.error(f"删除配置路由失败: {e}")
+            QMessageBox.critical(parent_dialog, "错误", f"删除配置路由失败:\n{e}")
+            self.statusbar.showMessage("路由删除失败", 3000)
+    
+    def _confirm_reapply_route(self, parent_dialog: QDialog, config_route: Route, destination: str):
+        """确认重新应用路由"""
+        reply = QMessageBox.question(
+            parent_dialog, "确认重新应用",
+            f"确定要重新应用路由?\n\n"
+            f"目标: {destination}\n"
+            f"描述: {config_route.desc}\n\n"
+            f"将删除旧路由并重新添加!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        # 获取接口
+        interface = self.interface_manager.get_interface_by_name(config_route.interface_name)
+        if not interface:
+            QMessageBox.critical(parent_dialog, "错误", f"找不到接口: {config_route.interface_name}")
+            return
+        
+        # 删除旧路由
+        self.statusbar.showMessage(f"正在删除旧路由 {destination}...", 0)
+        self.route_manager.delete_route(destination)
+        
+        # 添加新路由
+        self.statusbar.showMessage(f"正在重新应用路由 {destination}...", 0)
+        success, error = self.route_manager.add_route(config_route, interface.if_index)
+        
+        if success:
+            logger.info(f"成功重新应用路由: {destination}")
+            QMessageBox.information(parent_dialog, "成功", f"已重新应用路由: {destination}")
+            
+            # 刷新显示
+            self.route_manager.refresh_system_routes()
+            self._update_unified_routes_table()
+            
+            self.statusbar.showMessage("路由重新应用成功", 3000)
+            parent_dialog.accept()
+        else:
+            logger.error(f"重新应用路由失败: {destination}, {error}")
+            QMessageBox.critical(parent_dialog, "错误", f"重新应用路由失败:\n{error}")
+            self.statusbar.showMessage("路由重新应用失败", 3000)
+    
+    def _on_delete_managed_route(self, destination: str, config_route: Route):
+        """删除工具管理的路由(同时删除配置和系统路由) - 已废弃,由 _on_manage_system_route 替代"""
+        # 保留此方法以防有其他地方调用
+        self._on_manage_system_route(config_route, destination)
     
     def _on_add_system_route(self):
         """新增系统路由"""
@@ -955,7 +1591,7 @@ class MainWindow(QMainWindow):
                 
                 # 刷新显示
                 self.route_manager.refresh_system_routes()
-                self._update_system_routes_table()
+                self._update_unified_routes_table()
                 self._update_route_stats()
                 
                 self.statusbar.showMessage("路由添加成功", 3000)
@@ -989,8 +1625,7 @@ class MainWindow(QMainWindow):
             
             # 刷新显示
             self.route_manager.refresh_system_routes()
-            self._update_system_routes_table()
-            self._update_routes_table()  # 同时更新配置路由的状态
+            self._update_unified_routes_table()
             self._update_route_stats()
             
             self.statusbar.showMessage("路由删除成功", 3000)
@@ -1028,28 +1663,12 @@ class MainWindow(QMainWindow):
         if self.config_manager.load_profile(profile_name):
             self.routes = self.config_manager.get_routes()
             self._update_group_tree()
-            self._update_routes_table()
+            self._update_unified_routes_table()
             self._update_statusbar()
             self.statusbar.showMessage(f"已切换到 Profile: {profile_name}", 3000)
         else:
             QMessageBox.critical(self, "错误", f"加载 Profile 失败: {profile_name}")
     
-    def _on_group_selected(self, item: QTreeWidgetItem, column: int):
-        """分组选择事件"""
-        group_name = item.data(0, Qt.ItemDataRole.UserRole)
-        search_text = self.search_input.text()
-        self._update_routes_table(group_name, search_text)
-    
-    def _on_search_changed(self, text: str):
-        """搜索文本变化事件"""
-        # 获取当前选中的分组
-        selected_items = self.group_tree.selectedItems()
-        if selected_items:
-            group_name = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
-        else:
-            group_name = "All"
-        
-        self._update_routes_table(group_name, text)
     
     def _on_add_route(self):
         """新增路由"""
@@ -1060,7 +1679,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请先读取接口信息")
             return
         
-        dialog = RouteDialog(self, interfaces=interfaces)
+        # 获取当前选中的网关
+        default_gateway = None
+        current_index = self.gateway_filter_combo.currentIndex()
+        if current_index > 0:  # 0是"All (全部)"
+            default_gateway = self.gateway_filter_combo.itemData(current_index)
+        
+        dialog = RouteDialog(self, interfaces=interfaces, default_gateway=default_gateway)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             route = dialog.get_route()
             if route:
@@ -1071,11 +1696,35 @@ class MainWindow(QMainWindow):
                 self.config_manager.set_routes(self.routes)
                 self.config_manager.save_profile()
                 
+                # 检查是否需要立即应用
+                if dialog.should_apply_immediately():
+                    # 解析接口索引
+                    interface = self.interface_manager.get_interface_by_name(route.interface_name)
+                    if interface:
+                        self.statusbar.showMessage(f"正在应用路由 {route.target}...", 0)
+                        success, error = self.route_manager.add_route(route, interface.if_index)
+                        
+                        if success:
+                            logger.info(f"成功应用路由: {route.target}")
+                            self.statusbar.showMessage(f"路由已添加并应用: {route.target}", 3000)
+                            
+                            # 刷新系统路由
+                            self.route_manager.refresh_system_routes()
+                            self._update_unified_routes_table()
+                        else:
+                            logger.error(f"应用路由失败: {route.target}, {error}")
+                            QMessageBox.warning(self, "应用失败", f"路由已保存到配置，但应用到系统失败:\n{error}")
+                            self.statusbar.showMessage(f"路由已保存但应用失败: {route.target}", 3000)
+                    else:
+                        QMessageBox.warning(self, "错误", f"找不到接口: {route.interface_name}")
+                        self.statusbar.showMessage(f"已添加路由(未应用): {route.target}", 3000)
+                else:
+                    self.statusbar.showMessage(f"已添加路由: {route.target}", 3000)
+                
                 # 刷新显示
                 self._update_group_tree()
-                self._update_routes_table()
-                
-                self.statusbar.showMessage(f"已添加路由: {route.target}", 3000)
+                self._update_unified_routes_table()
+                self._update_route_stats()
     
     def _on_edit_route(self, route: Route):
         """编辑路由"""
@@ -1098,27 +1747,68 @@ class MainWindow(QMainWindow):
                 self.config_manager.set_routes(self.routes)
                 self.config_manager.save_profile()
                 
+                # 检查是否需要立即应用
+                if dialog.should_apply_immediately():
+                    interface = self.interface_manager.get_interface_by_name(edited_route.interface_name)
+                    if interface:
+                        self.statusbar.showMessage(f"正在应用路由 {edited_route.target}...", 0)
+                        
+                        # 先删除旧路由(如果存在)
+                        self.route_manager.delete_route(route.target)
+                        
+                        # 添加新路由
+                        success, error = self.route_manager.add_route(edited_route, interface.if_index)
+                        
+                        if success:
+                            logger.info(f"成功应用更新的路由: {edited_route.target}")
+                            self.statusbar.showMessage(f"路由已更新并应用: {edited_route.target}", 3000)
+                            
+                            # 刷新系统路由
+                            self.route_manager.refresh_system_routes()
+                            self._update_unified_routes_table()
+                        else:
+                            logger.error(f"应用路由失败: {edited_route.target}, {error}")
+                            QMessageBox.warning(self, "应用失败", f"路由已保存到配置，但应用到系统失败:\n{error}")
+                            self.statusbar.showMessage(f"路由已更新但应用失败: {edited_route.target}", 3000)
+                    else:
+                        QMessageBox.warning(self, "错误", f"找不到接口: {edited_route.interface_name}")
+                        self.statusbar.showMessage(f"已更新路由(未应用): {edited_route.target}", 3000)
+                else:
+                    self.statusbar.showMessage(f"已更新路由: {edited_route.target}", 3000)
+                
                 # 刷新显示
                 self._update_group_tree()
-                self._update_routes_table()
-                
-                self.statusbar.showMessage(f"已更新路由: {edited_route.target}", 3000)
+                self._update_unified_routes_table()
+                self._update_route_stats()
     
     def _on_delete_route(self, route: Route):
-        """删除路由"""
+        """删除配置路由（仅删除配置，不删除系统路由）"""
         reply = QMessageBox.question(
             self, "确认删除",
-            f"是否删除路由: {route.target}?",
+            f"是否删除路由配置?\n\n"
+            f"目标: {route.target}\n"
+            f"描述: {route.desc}\n\n"
+            f"注意：仅删除配置，不会删除系统中的路由。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            self.routes.remove(route)
-            self.config_manager.set_routes(self.routes)
-            self.config_manager.save_profile()
-            self._update_group_tree()
-            self._update_routes_table()
-            self.statusbar.showMessage(f"已删除路由: {route.target}", 3000)
+            try:
+                self.routes.remove(route)
+                self.config_manager.set_routes(self.routes)
+                self.config_manager.save_profile()
+                
+                logger.info(f"已删除路由配置: {route.target}")
+                
+                # 刷新显示
+                self._update_group_tree()
+                self._update_unified_routes_table()
+                self._update_route_stats()
+                
+                self.statusbar.showMessage(f"已删除路由配置: {route.target}", 3000)
+            except Exception as e:
+                logger.error(f"删除路由配置失败: {e}")
+                QMessageBox.critical(self, "错误", f"删除路由配置失败:\n{e}")
     
     def _on_refresh_interfaces(self):
         """刷新接口"""
@@ -1184,7 +1874,7 @@ class MainWindow(QMainWindow):
             self.snapshot_manager.create_config_snapshot(config_path)
             
             # 刷新显示
-            self._update_routes_table()
+            self._update_unified_routes_table()
             self._update_statusbar()
             
             self.statusbar.showMessage("应用成功", 5000)
@@ -1290,7 +1980,7 @@ class MainWindow(QMainWindow):
                 
                 # 刷新显示
                 self._update_group_tree()
-                self._update_routes_table()
+                self._update_unified_routes_table()
                 
                 QMessageBox.information(self, "成功", f"已导入 {len(imported_routes)} 条路由")
             else:
@@ -1371,7 +2061,7 @@ class MainWindow(QMainWindow):
                     self.routes = self.config_manager.get_routes()
                     self._update_profile_combo()
                     self._update_group_tree()
-                    self._update_routes_table()
+                    self._update_unified_routes_table()
                     self._update_statusbar()
                     
                     if action == "load_and_apply":
@@ -1426,4 +2116,30 @@ Windows 路由管理 GUI 工具
 © 2025 NetTLS
         """
         QMessageBox.about(self, "关于", about_text.strip())
+    
+    def _on_exit(self):
+        """退出应用程序"""
+        # 询问是否保存当前配置
+        reply = QMessageBox.question(
+            self, "退出确认",
+            "是否保存当前配置后退出?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes
+        )
+        
+        if reply == QMessageBox.StandardButton.Cancel:
+            return
+        elif reply == QMessageBox.StandardButton.Yes:
+            # 保存当前配置
+            try:
+                self.config_manager.set_routes(self.routes)
+                self.config_manager.save_profile()
+                logger.info(f"退出前已保存配置: {self.config_manager.current_profile}")
+            except Exception as e:
+                logger.error(f"保存配置失败: {e}")
+                QMessageBox.warning(self, "警告", f"保存配置失败:\n{e}\n\n将直接退出。")
+        
+        # 关闭应用程序
+        logger.info("应用程序正常退出")
+        self.close()
 

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class RouteDialog(QDialog):
     """路由新增/编辑对话框"""
     
-    def __init__(self, parent=None, route: Route = None, interfaces: list = None):
+    def __init__(self, parent=None, route: Route = None, interfaces: list = None, default_gateway: str = None):
         """
         初始化对话框
         
@@ -28,15 +28,18 @@ class RouteDialog(QDialog):
             parent: 父窗口
             route: 要编辑的路由(None 表示新增)
             interfaces: 可用接口列表
+            default_gateway: 默认网关
         """
         super().__init__(parent)
         
         self.route = route
         self.interfaces = interfaces or []
         self.is_edit = route is not None
+        self.default_gateway = default_gateway
         
         # 结果
         self.result_route: Route = None
+        self.should_apply: bool = False  # 是否立即应用到系统
         
         # 设置窗口
         self.setWindowTitle("编辑路由" if self.is_edit else "新增路由")
@@ -66,6 +69,10 @@ class RouteDialog(QDialog):
         desc_group = self._create_desc_group()
         layout.addWidget(desc_group)
         
+        # 命令预览组
+        preview_group = self._create_preview_group()
+        layout.addWidget(preview_group)
+        
         # 验证信息标签
         self.validation_label = QLabel()
         self.validation_label.setStyleSheet("color: red; padding: 5px;")
@@ -78,6 +85,9 @@ class RouteDialog(QDialog):
         layout.addLayout(button_layout)
         
         self.setLayout(layout)
+        
+        # 所有UI创建完成后,连接信号
+        self._connect_signals()
     
     def _create_basic_group(self) -> QGroupBox:
         """创建基本信息组"""
@@ -87,14 +97,14 @@ class RouteDialog(QDialog):
         # 目标地址
         self.target_input = QLineEdit()
         self.target_input.setPlaceholderText("支持 IP、CIDR 或域名，如 192.168.1.0/24")
-        self.target_input.textChanged.connect(self._on_target_changed)
+        # 暂不连接信号,等所有UI创建完成后再连接
         form_layout.addRow("目标地址*:", self.target_input)
         
         # 前缀长度（仅对 IP 和域名显示）
         self.prefix_input = QSpinBox()
         self.prefix_input.setRange(1, 32)
         self.prefix_input.setValue(32)
-        self.prefix_input.valueChanged.connect(self._update_mask_display)
+        # 暂不连接信号,等所有UI创建完成后再连接
         form_layout.addRow("前缀长度:", self.prefix_input)
         
         # 掩码（只读显示）
@@ -106,11 +116,16 @@ class RouteDialog(QDialog):
         # 网关
         self.gateway_input = QLineEdit()
         self.gateway_input.setPlaceholderText("网关 IP 地址")
+        
+        # 如果有默认网关，设置默认值
+        if not self.is_edit and self.default_gateway:
+            self.gateway_input.setText(self.default_gateway)
+        
         form_layout.addRow("网关*:", self.gateway_input)
         
         # 接口选择
         self.interface_combo = QComboBox()
-        self.interface_combo.currentIndexChanged.connect(self._on_interface_changed)
+        # 暂不连接信号,等所有UI创建完成后再连接
         
         # 填充接口列表
         for interface in self.interfaces:
@@ -173,9 +188,45 @@ class RouteDialog(QDialog):
         group.setLayout(form_layout)
         return group
     
+    def _create_preview_group(self) -> QGroupBox:
+        """创建命令预览组"""
+        group = QGroupBox("命令预览")
+        layout = QVBoxLayout()
+        
+        # 命令预览文本框
+        self.command_preview = QTextEdit()
+        self.command_preview.setReadOnly(True)
+        self.command_preview.setMaximumHeight(100)
+        self.command_preview.setStyleSheet("""
+            QTextEdit {
+                background-color: #f5f5f5;
+                font-family: 'Consolas', 'Monaco', monospace;
+                font-size: 10pt;
+                border: 1px solid #ccc;
+                padding: 5px;
+            }
+        """)
+        self.command_preview.setPlaceholderText("命令预览将在这里显示...")
+        layout.addWidget(self.command_preview)
+        
+        # 立即更新按钮
+        update_btn = QPushButton("刷新预览")
+        update_btn.clicked.connect(self._update_command_preview)
+        layout.addWidget(update_btn)
+        
+        group.setLayout(layout)
+        return group
+    
     def _create_buttons(self) -> QHBoxLayout:
         """创建按钮组"""
         layout = QHBoxLayout()
+        
+        # 立即应用选项
+        self.apply_immediately_checkbox = QCheckBox("立即应用到系统")
+        self.apply_immediately_checkbox.setChecked(True)
+        self.apply_immediately_checkbox.setToolTip("保存后立即将路由添加到系统路由表")
+        layout.addWidget(self.apply_immediately_checkbox)
+        
         layout.addStretch()
         
         # 取消按钮
@@ -186,6 +237,7 @@ class RouteDialog(QDialog):
         # 保存按钮
         save_btn = QPushButton("保存")
         save_btn.setDefault(True)
+        save_btn.setStyleSheet("background-color: #10B981; color: white; padding: 8px 20px;")
         save_btn.clicked.connect(self._on_save)
         layout.addWidget(save_btn)
         
@@ -196,6 +248,20 @@ class RouteDialog(QDialog):
             layout.addWidget(save_continue_btn)
         
         return layout
+    
+    def _connect_signals(self):
+        """连接信号(在所有UI创建完成后调用)"""
+        # 连接目标地址变化信号
+        self.target_input.textChanged.connect(self._on_target_changed)
+        
+        # 连接前缀长度变化信号
+        self.prefix_input.valueChanged.connect(self._update_mask_display)
+        
+        # 连接接口选择变化信号
+        self.interface_combo.currentIndexChanged.connect(self._on_interface_changed)
+        
+        # 初始化掩码显示
+        self._update_mask_display()
     
     def _load_route_data(self):
         """加载路由数据到表单"""
@@ -256,6 +322,7 @@ class RouteDialog(QDialog):
             
             self._update_mask_display()
             self.validation_label.setVisible(False)
+            self._update_command_preview()
         else:
             if text:  # 只有在有输入时才显示错误
                 self.validation_label.setText(error)
@@ -266,6 +333,57 @@ class RouteDialog(QDialog):
         prefix_length = self.prefix_input.value()
         mask = RouteManager.prefix_to_mask(prefix_length)
         self.mask_display.setText(mask)
+        self._update_command_preview()
+    
+    def _update_command_preview(self):
+        """更新命令预览"""
+        # 检查 command_preview 是否已创建
+        if not hasattr(self, 'command_preview'):
+            return
+        
+        try:
+            # 获取表单数据
+            target = self.target_input.text().strip()
+            if not target:
+                self.command_preview.setPlainText("请输入目标地址...")
+                return
+            
+            gateway = self.gateway_input.text().strip()
+            if not gateway:
+                gateway = "<网关>"
+            
+            # 获取目标IP和前缀长度
+            if '/' in target:
+                target_ip = target.split('/')[0]
+                prefix_length = int(target.split('/')[1])
+            else:
+                target_ip = target
+                prefix_length = self.prefix_input.value()
+            
+            mask = RouteManager.prefix_to_mask(prefix_length)
+            metric = self.metric_input.value()
+            
+            # 获取接口
+            interface = self.interface_combo.currentData()
+            if_index = interface.if_index if interface else "<ifIndex>"
+            
+            # 构建命令
+            persistent_flag = "-p" if self.persistent_checkbox.isChecked() else ""
+            
+            # 添加命令
+            add_cmd = f"route {persistent_flag} add {target_ip} mask {mask} {gateway} IF {if_index} metric {metric}"
+            
+            # 删除命令
+            del_cmd = f"route delete {target_ip}"
+            
+            # 显示命令
+            preview_text = f"# 添加路由命令:\n{add_cmd}\n\n"
+            preview_text += f"# 删除路由命令:\n{del_cmd}"
+            
+            self.command_preview.setPlainText(preview_text)
+            
+        except Exception as e:
+            self.command_preview.setPlainText(f"命令预览错误: {e}")
     
     def _on_interface_changed(self, index: int):
         """接口选择变化事件"""
@@ -277,6 +395,8 @@ class RouteDialog(QDialog):
             # 自动填充网关
             if not self.gateway_input.text():
                 self.gateway_input.setText(interface.gateway)
+        
+        self._update_command_preview()
     
     def _validate_form(self) -> Tuple[bool, str]:
         """
@@ -381,6 +501,9 @@ class RouteDialog(QDialog):
         # 创建路由对象
         self.result_route = self._create_route_from_form()
         
+        # 保存是否立即应用标志
+        self.should_apply = self.apply_immediately_checkbox.isChecked()
+        
         # 关闭对话框
         self.accept()
     
@@ -409,4 +532,8 @@ class RouteDialog(QDialog):
     def get_route(self) -> Route:
         """获取结果路由对象"""
         return self.result_route
+    
+    def should_apply_immediately(self) -> bool:
+        """是否立即应用到系统"""
+        return self.should_apply
 
