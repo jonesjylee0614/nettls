@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>路由管理工具原型 (HTML)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+  <header class="page-hero">
+    <div class="hero-content">
+      <h1>路由管理工具原型</h1>
+      <p>本页面以 HTML 形式呈现永久 IPv4 路由管理工具的核心界面、弹窗与流程示意，覆盖《设计文档》中列出的所有功能，并配套说明与 Mermaid 流程图，便于快速评审与实现。</p>
+      <div class="hero-tags">
+        <span class="tag">PyQt6 参考布局</span>
+        <span class="tag">WireGuard 提醒</span>
+        <span class="tag">幂等 Apply</span>
+        <span class="tag">批量操作</span>
+        <span class="tag">快照回滚</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="app-preview">
+      <div class="app-shell">
+        <header class="toolbar">
+          <div class="profile-box">
+            <span class="toolbar-note">PROFILE</span>
+            <div class="select-row">
+              <select id="profile-select">
+                <option>home.json</option>
+                <option>office.json</option>
+                <option>lab.json</option>
+              </select>
+              <button class="btn primary small" data-open="modal-profile">管理…</button>
+            </div>
+          </div>
+          <div class="toolbar-actions">
+            <button class="btn primary" data-open="modal-route">新增路由</button>
+            <button class="btn ghost" data-open="modal-interface">读取接口</button>
+            <button class="btn ghost" data-open="modal-diff">应用</button>
+            <button class="btn ghost" data-open="modal-verify">验证</button>
+            <button class="btn ghost" data-open="modal-snapshot">回滚</button>
+            <button class="btn ghost" data-open="modal-import">导入</button>
+            <button class="btn ghost" data-open="modal-export">导出</button>
+            <button class="btn ghost" data-open="modal-settings">设置</button>
+            <button class="btn ghost" data-open="modal-help">帮助</button>
+          </div>
+        </header>
+
+        <div class="content-grid">
+          <aside class="sidebar">
+            <div>
+              <h3>分组</h3>
+              <ul class="group-tree">
+                <li class="active"><span>All</span><span class="count">24</span></li>
+                <li><span>未分组</span><span class="count">5</span></li>
+                <li><span>aliyun</span><span class="count">7</span></li>
+                <li><span class="nest">└─ ECS</span><span class="count">3</span></li>
+                <li><span>office</span><span class="count">6</span></li>
+                <li><span>gcp</span><span class="count">3</span></li>
+              </ul>
+            </div>
+            <div class="wg-alert">
+              当前检测到 WireGuard 全隧道（0.0.0.0/1 / 128.0.0.0/1），建议直连白名单使用 /32 或精确 CIDR。
+            </div>
+            <div class="stack">
+              <strong>快速操作</strong>
+              <div class="badge">右键分组：新增 / 重命名 / 删除</div>
+              <div class="badge">拖拽条目可快速调整分组</div>
+            </div>
+          </aside>
+
+          <section class="routes-area">
+            <div class="routes-top">
+              <div class="search-box">
+                <input type="search" placeholder="按目标、描述或分组过滤，例如 39.96.205.182 / group:aliyun">
+                <span class="chip">过滤：启用项</span>
+              </div>
+              <div class="legend">
+                <span><span class="dot" style="background:#34d399;"></span>启用</span>
+                <span><span class="dot" style="background:#f97316;"></span>待应用</span>
+                <span><span class="dot" style="background:#ef4444;"></span>失败</span>
+              </div>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>启用</th>
+                    <th>操作</th>
+                    <th>目标</th>
+                    <th>掩码</th>
+                    <th>网关</th>
+                    <th>接口名</th>
+                    <th>Metric</th>
+                    <th>持久</th>
+                    <th>描述</th>
+                    <th>分组</th>
+                    <th>结果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><input type="checkbox" checked disabled></td>
+                    <td>
+                      <div class="table-actions">
+                        <button class="btn link-btn" data-open="modal-route">编辑</button>
+                        <button class="btn link-btn" data-open="modal-single-apply">单条应用</button>
+                        <button class="btn link-btn" data-open="modal-diff">加入计划</button>
+                        <button class="btn link-btn" data-open="modal-verify">验证</button>
+                      </div>
+                    </td>
+                    <td>
+                      <div>39.96.205.182/32</div>
+                      <div class="subtext">最近验证成功 09:32</div>
+                    </td>
+                    <td>255.255.255.255</td>
+                    <td>192.168.1.1</td>
+                    <td>
+                      vEthernet (mychange)
+                      <div class="subtext">ifIndex 13</div>
+                    </td>
+                    <td>3</td>
+                    <td>是</td>
+                    <td>阿里云白名单 A</td>
+                    <td><span class="badge">aliyun</span></td>
+                    <td><span class="status success">成功 · 09:32</span></td>
+                  </tr>
+                  <tr>
+                    <td><input type="checkbox" checked disabled></td>
+                    <td>
+                      <div class="table-actions">
+                        <button class="btn link-btn" data-open="modal-route">编辑</button>
+                        <button class="btn link-btn" data-open="modal-verify">验证</button>
+                      </div>
+                    </td>
+                    <td>
+                      <div>git.example.com</div>
+                      <div class="badge">Pin: 8.8.8.8 • 8.8.4.4</div>
+                    </td>
+                    <td>-</td>
+                    <td>10.10.0.1</td>
+                    <td>
+                      Ethernet 3
+                      <div class="subtext">ifIndex 24</div>
+                    </td>
+                    <td>5</td>
+                    <td>是</td>
+                    <td>代码仓库直连</td>
+                    <td><span class="badge">devops</span></td>
+                    <td><span class="status pending">等待验证</span></td>
+                  </tr>
+                  <tr>
+                    <td><input type="checkbox" disabled></td>
+                    <td>
+                      <div class="table-actions">
+                        <button class="btn link-btn" data-open="modal-route">编辑</button>
+                        <button class="btn link-btn" data-open="modal-settings">安全设置</button>
+                      </div>
+                    </td>
+                    <td>172.16.10.0/24</td>
+                    <td>255.255.255.0</td>
+                    <td>192.168.50.1</td>
+                    <td>
+                      vEthernet (lab)
+                      <div class="subtext">ifIndex 19</div>
+                    </td>
+                    <td>10</td>
+                    <td>是</td>
+                    <td>实验环境（暂时关闭）</td>
+                    <td><span class="badge">lab</span></td>
+                    <td><span class="status info">跳过 · 禁用</span></td>
+                  </tr>
+                  <tr>
+                    <td><input type="checkbox" checked disabled></td>
+                    <td>
+                      <div class="table-actions">
+                        <button class="btn link-btn" data-open="modal-route">修复</button>
+                        <button class="btn link-btn" data-open="modal-settings">护栏</button>
+                        <button class="btn link-btn" data-open="modal-verify">查看日志</button>
+                      </div>
+                    </td>
+                    <td>8.8.8.8/32</td>
+                    <td>255.255.255.255</td>
+                    <td>192.168.1.200</td>
+                    <td>
+                      WLAN
+                      <div class="subtext alert">ifIndex 7</div>
+                    </td>
+                    <td>5</td>
+                    <td>是</td>
+                    <td>测试错误网关</td>
+                    <td><span class="badge">debug</span></td>
+                    <td><span class="status failed">失败 · 网关不在同网段</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <footer class="status-bar">
+          <span class="status-default"><strong>默认物理接口：</strong> vEthernet (mychange) / ifIndex 13 / 网关 192.168.1.1</span>
+          <span class="status-wireguard"><strong>WireGuard：</strong> Full Tunnel · 已提醒</span>
+          <span class="status-apply"><strong>上次应用：</strong> 成功 · 09:32 · 用户 admin</span>
+          <span><strong>选中：</strong> 3 条（待应用 1）</span>
+        </footer>
+      </div>
+    </section>
+
+    <section class="section-card">
+      <h2>查看原型说明</h2>
+      <p>详细的功能说明、流程图、数据结构与实现建议已整理在 <code>guide.html</code> 中，便于与交互原型分开查看。</p>
+      <a class="btn primary" href="guide.html">打开详细说明</a>
+    </section>
+  </main>
+
+  <!-- 模态框区域 -->
+  <div class="modal" id="modal-interface" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-interface">&times;</button>
+      <h2>接口与环境管理</h2>
+      <p>列出所有 Up 状态接口，设置默认物理接口，检测 WireGuard 全隧道。</p>
+      <table class="info-table">
+        <thead>
+          <tr>
+            <th>接口名</th>
+            <th>ifIndex</th>
+            <th>MAC</th>
+            <th>网段</th>
+            <th>默认网关</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>vEthernet (mychange)</td>
+            <td>13</td>
+            <td>00-15-5D-3A-9B-01</td>
+            <td>192.168.1.0/24</td>
+            <td>192.168.1.1</td>
+            <td><span class="status success">默认物理接口</span></td>
+          </tr>
+          <tr>
+            <td>WireGuard client</td>
+            <td>21</td>
+            <td>32-AB-9C-00-11-22</td>
+            <td>10.14.0.0/24</td>
+            <td>0.0.0.0</td>
+            <td><span class="status warning">全隧道</span></td>
+          </tr>
+          <tr>
+            <td>Ethernet 3</td>
+            <td>24</td>
+            <td>C0-12-22-09-1A-55</td>
+            <td>10.10.0.0/24</td>
+            <td>10.10.0.1</td>
+            <td><span class="status info">可选</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="modal-actions">
+        <button class="primary">设为默认物理接口</button>
+        <button class="secondary" data-close="modal-interface">关闭</button>
+      </div>
+      <ul class="list">
+        <li>支持按名称、状态过滤；点击行可查看详细属性。</li>
+        <li>WireGuard 检测命中 `/1` 路由时自动高亮警告。</li>
+        <li>默认物理接口影响新增路由时的网关自动填充。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-route" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-route">&times;</button>
+      <h2>新增 / 编辑路由</h2>
+      <p>支持 IPv4 / CIDR / 域名，自动计算掩码，提供 Pin 与验证选项。</p>
+      <div class="modal-form">
+        <label>目标 (IPv4 / CIDR)
+          <input type="text" value="39.96.205.182/32">
+        </label>
+        <label>域名 (可选)
+          <input type="text" value="git.example.com">
+          <span class="help-text">直连白名单通常使用 IP/CIDR，若需 Pin 域名，可填写此项并勾选“固定解析”。</span>
+        </label>
+        <label>掩码
+          <input type="text" value="255.255.255.255" disabled>
+        </label>
+        <label>网关
+          <input type="text" value="192.168.1.1">
+        </label>
+        <label>接口 / 网卡
+          <select>
+            <option>vEthernet (mychange)</option>
+            <option>Ethernet 3</option>
+            <option>WireGuard client</option>
+          </select>
+          <span class="help-text">显示接口名称与 ifIndex，用于执行命令时指定网卡。</span>
+        </label>
+        <label>Metric <span class="badge">已修改</span>
+          <input type="number" value="5">
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" checked>
+          <span>持久 (Persistent)</span>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" checked>
+          <span>验证连通性</span>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" checked>
+          <span>固定解析 (Pin) 8.8.8.8 / 8.8.4.4</span>
+        </label>
+        <label class="full">描述
+          <textarea>代码仓库直连路由，业务高优先级。</textarea>
+        </label>
+        <label>分组
+          <select>
+            <option>aliyun</option>
+            <option selected>devops</option>
+            <option>office</option>
+            <option>lab</option>
+          </select>
+        </label>
+        <label class="checkbox full">
+          <input type="checkbox" checked>
+          <span>仅应用已修改字段（未变化字段在 Diff 中自动跳过）</span>
+        </label>
+      </div>
+      <div class="command-preview">
+        <span>预览命令</span>
+        <code>route -p add 39.96.205.182 mask 255.255.255.255 192.168.1.1 IF 13 metric 3</code>
+      </div>
+      <div class="change-summary">
+        <div class="change-summary-title">变化摘要</div>
+        <ul class="list">
+          <li>Metric：5 → 3（提升优先级，标记为 change）。</li>
+          <li>目标保持 39.96.205.182/32，未变化时 Apply 自动跳过。</li>
+          <li>网关保持 192.168.1.1，Diff 中显示为“skip”。</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button class="primary">保存并继续新增</button>
+        <button class="secondary" data-open="modal-single-apply">保存并单条应用</button>
+        <button class="secondary">仅保存</button>
+        <button class="secondary" data-close="modal-route">取消</button>
+      </div>
+      <ul class="list">
+        <li>CIDR 与掩码联动，默认以 IP/CIDR 形式维护永久路由。</li>
+        <li>网关需与接口同网段，不通过时标红并禁止保存。</li>
+        <li>勾选 Pin 后写入配置 <code>pinned</code> 字段，离线应用仍可使用固定 IP。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-diff" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-diff">&times;</button>
+      <h2>Apply Diff 预览</h2>
+      <p>执行前展示新增/修改/删除计划，支持失败自动回滚与日志查看。</p>
+      <div class="stack">
+        <div class="badge">新增 3 · 修改 2 · 删除 1 · 跳过 4</div>
+        <label class="checkbox">
+          <input type="checkbox" checked>
+          <span>执行后自动验证</span>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" checked>
+          <span>失败自动回滚</span>
+        </label>
+      </div>
+      <table class="info-table" style="margin-top:1rem;">
+        <thead>
+          <tr>
+            <th>操作</th>
+            <th>目标</th>
+            <th>网关</th>
+            <th>接口</th>
+            <th>Metric</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="status info">add</span></td>
+            <td>10.0.0.0/24</td>
+            <td>192.168.1.1</td>
+            <td>vEthernet (mychange)</td>
+            <td>5</td>
+            <td>新增直连白名单</td>
+          </tr>
+          <tr>
+            <td><span class="status info">change</span></td>
+            <td>172.16.20.0/24</td>
+            <td>10.10.0.1</td>
+            <td>Ethernet 3</td>
+            <td><span class="badge">5 → 3</span></td>
+            <td>调整 Metric 提升优先级</td>
+          </tr>
+          <tr>
+            <td><span class="status info">delete</span></td>
+            <td>192.168.0.0/16</td>
+            <td>—</td>
+            <td>—</td>
+            <td>—</td>
+            <td>冲突默认路由，计划删除</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="stack" style="margin-top:1rem;">
+        <div class="badge">命令日志实时滚动，失败项标红并提供回滚按钮。</div>
+      </div>
+      <div class="modal-actions">
+        <button class="primary">执行计划</button>
+        <button class="secondary">仅保存计划</button>
+        <button class="secondary" data-close="modal-diff">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-single-apply" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-single-apply">&times;</button>
+      <h2>单条路由应用</h2>
+      <p>仅对当前路由执行 Apply，避免影响其他条目，同时保留 Diff 记录以便审计。</p>
+      <table class="info-table">
+        <tbody>
+          <tr>
+            <th>目标</th>
+            <td>39.96.205.182/32</td>
+          </tr>
+          <tr>
+            <th>接口 / 网卡</th>
+            <td>vEthernet (mychange) · ifIndex 13</td>
+          </tr>
+          <tr>
+            <th>操作类型</th>
+            <td><span class="status info">change</span>（Metric 调整）</td>
+          </tr>
+          <tr>
+            <th>变更内容</th>
+            <td>Metric：5 → 3；其他字段保持不变并自动跳过。</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="command-preview">
+        <span>将执行</span>
+        <code>route -p add 39.96.205.182 mask 255.255.255.255 192.168.1.1 IF 13 metric 3</code>
+      </div>
+      <ul class="list">
+        <li>单条 Apply 会记录至审计日志，并生成局部快照。</li>
+        <li>若执行失败，可立即调用回滚功能恢复至前一个状态。</li>
+      </ul>
+      <div class="modal-actions">
+        <button class="primary">执行单条 Apply</button>
+        <button class="secondary" data-open="modal-diff">加入批量计划</button>
+        <button class="secondary" data-close="modal-single-apply">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-verify" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-verify">&times;</button>
+      <h2>验证结果</h2>
+      <p>结合 route print 与 TraceRoute 命令查询命中情况与首跳信息。</p>
+      <table class="info-table">
+        <thead>
+          <tr>
+            <th>目标</th>
+            <th>命中</th>
+            <th>Trace 首跳</th>
+            <th>耗时 (ms)</th>
+            <th>日志</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>39.96.205.182</td>
+            <td><span class="status success">命中 · vEthernet</span></td>
+            <td>192.168.1.1</td>
+            <td>24</td>
+            <td><a href="#">查看</a></td>
+          </tr>
+          <tr>
+            <td>git.example.com</td>
+            <td><span class="status success">命中 · Ethernet 3</span></td>
+            <td>10.10.0.1</td>
+            <td>31</td>
+            <td><a href="#">查看</a></td>
+          </tr>
+          <tr>
+            <td>8.8.8.8</td>
+            <td><span class="status failed">未命中</span></td>
+            <td>—</td>
+            <td>--</td>
+            <td><a href="#">错误输出</a></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="modal-actions">
+        <button class="primary">重新验证失败项</button>
+        <button class="secondary">导出 CSV</button>
+        <button class="secondary" data-close="modal-verify">关闭</button>
+      </div>
+      <ul class="list">
+        <li>默认并行度可在设置中调整；执行失败保留命令输出便于排查。</li>
+        <li>可勾选“仅验证新变化”以节省时间，并统计平均耗时。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-profile" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-profile">&times;</button>
+      <h2>Profile 管理</h2>
+      <p>维护多配置文件，支持导入、导出、切换策略与临时快照。</p>
+      <div class="profile-layout">
+        <div class="profile-list">
+          <div class="profile-item active">
+            <span>home.json</span>
+            <span class="subtext">上次应用 09:32</span>
+          </div>
+          <div class="profile-item">
+            <span>office.json</span>
+            <span class="subtext">上次应用 08:10</span>
+          </div>
+          <div class="profile-item">
+            <span>lab.json</span>
+            <span class="subtext">未应用</span>
+          </div>
+        </div>
+        <div class="stack">
+          <div class="badge">切换策略</div>
+          <label class="checkbox">
+            <input type="radio" name="profile-action" checked>
+            <span>仅加载到编辑态</span>
+          </label>
+          <label class="checkbox">
+            <input type="radio" name="profile-action">
+            <span>加载后立即 Apply</span>
+          </label>
+          <div class="badge">切换前可生成临时快照备份当前改动。</div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="primary">加载</button>
+        <button class="secondary">导入</button>
+        <button class="secondary">导出</button>
+        <button class="secondary" data-close="modal-profile">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-import" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-import">&times;</button>
+      <h2>导入向导</h2>
+      <p>支持 CSV / JSON 导入，自动校验字段、冲突策略与启用状态。</p>
+      <ol class="list">
+        <li>选择文件类型（CSV、JSON），上传或粘贴内容。</li>
+        <li>解析预览：展示字段匹配、CIDR 合法性、重复项提示。</li>
+        <li>选择冲突策略：覆盖 / 追加 / 跳过，支持仅导入启用项。</li>
+        <li>导入完成后可立即 Apply 或仅保存至编辑态。</li>
+      </ol>
+      <div class="modal-actions">
+        <button class="primary">选择文件</button>
+        <button class="secondary">使用示例模板</button>
+        <button class="secondary" data-close="modal-import">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-export" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-export">&times;</button>
+      <h2>导出配置</h2>
+      <p>导出当前 Profile 或选中条目，支持 JSON / CSV，并附加审计信息。</p>
+      <div class="modal-form">
+        <label>导出范围
+          <select>
+            <option>当前 Profile (全部路由)</option>
+            <option>仅选中路由</option>
+            <option>仅失败 / 待应用路由</option>
+          </select>
+        </label>
+        <label>格式
+          <select>
+            <option>JSON</option>
+            <option>CSV</option>
+          </select>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" checked>
+          <span>包含 pinned DNS</span>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" checked>
+          <span>导出审计摘要</span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="primary">导出</button>
+        <button class="secondary" data-close="modal-export">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-snapshot" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-snapshot">&times;</button>
+      <h2>快照与回滚</h2>
+      <p>Apply 前自动生成系统路由与工具配置快照，支持差异对比与回滚。</p>
+      <table class="info-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>类型</th>
+            <th>摘要</th>
+            <th>操作人</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>2025-11-11 09:32</td>
+            <td>系统路由</td>
+            <td>条目 124 → 127</td>
+            <td>admin</td>
+            <td>Apply 成功</td>
+          </tr>
+          <tr>
+            <td>2025-11-11 09:32</td>
+            <td>工具配置</td>
+            <td>Profile home.json</td>
+            <td>admin</td>
+            <td>与快照同步</td>
+          </tr>
+          <tr>
+            <td>2025-11-10 22:18</td>
+            <td>系统路由</td>
+            <td>条目 120 → 120</td>
+            <td>admin</td>
+            <td>回滚失败（权限不足）</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="modal-actions">
+        <button class="primary">回滚至 09:32 快照</button>
+        <button class="secondary">查看差异</button>
+        <button class="secondary" data-close="modal-snapshot">关闭</button>
+      </div>
+      <ul class="list">
+        <li>回滚采用 LIFO 顺序执行记录的反向命令。</li>
+        <li>支持导出快照 JSON 用于线下审计或灾备。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-settings" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-settings">&times;</button>
+      <h2>设置与安全护栏</h2>
+      <p>配置默认参数、风险防护与日志策略，支持高级模式。</p>
+      <div class="modal-form">
+        <label>默认 Metric
+          <input type="number" value="5">
+        </label>
+        <label>验证超时 (ms)
+          <input type="number" value="1500">
+        </label>
+        <label class="checkbox full">
+          <input type="checkbox" checked>
+          <span>阻止修改默认路由 (0.0.0.0/0)</span>
+        </label>
+        <label class="checkbox full">
+          <input type="checkbox" checked>
+          <span>校验网关必须与接口同网段</span>
+        </label>
+        <label class="checkbox full">
+          <input type="checkbox" checked>
+          <span>WireGuard 全隧道提醒</span>
+        </label>
+        <label class="checkbox full">
+          <input type="checkbox">
+          <span>启用高级模式（允许危险操作，需二次确认）</span>
+        </label>
+        <label class="full">日志滚动策略
+          <select>
+            <option>5MB × 5 份</option>
+            <option>10MB × 5 份</option>
+            <option>按日期切分</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="primary">保存设置</button>
+        <button class="secondary" data-close="modal-settings">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-help" aria-hidden="true">
+    <div class="modal-card">
+      <button class="modal-close" data-close="modal-help">&times;</button>
+      <h2>帮助与文档</h2>
+      <p>快速了解操作流程、命令封装示例与常见问题。</p>
+      <ul class="list">
+        <li><strong>快速上手：</strong>新增路由 → Apply → 验证 → 快照回滚。</li>
+        <li><strong>命令参考：</strong>route -p add/change/delete，Get-NetRoute，Test-NetConnection。</li>
+        <li><strong>权限说明：</strong>需管理员权限启动，不足权限时禁用关键按钮。</li>
+        <li><strong>日志位置：</strong>默认存于 <code>logs/rtmgr.log</code>，支持一键打开。</li>
+      </ul>
+      <div class="modal-actions">
+        <button class="secondary" data-close="modal-help">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="assets/mermaid-init.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
+
